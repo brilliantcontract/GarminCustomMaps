@@ -157,7 +157,7 @@ class ExportTest(unittest.TestCase):
                 plugin.exporter.cancel()
             wait_for_export(plugin)
         plugin.unload()
-        if options.get('cancel'):
+        if options.get('cancel') or options.get('expect_kmz') is False:
             return None
         self.assertTrue(os.path.exists(self.kmz_file), 'no kmz was written')
         return zipfile.ZipFile(self.kmz_file)
@@ -281,6 +281,16 @@ class ExportTest(unittest.TestCase):
         self.export(canvas, zoom=2.0, cancel=True)
         with open(self.kmz_file) as f:
             self.assertEqual(f.read(), 'old map')
+
+    def test_error_ends_export(self):
+        canvas = self.make_canvas('EPSG:4326', (10, 59, 12, 60.5),
+                                  'POLYGON((10 59, 12 59, 12 60.5, 10 60.5, 10 59))')
+        module = load_plugin()
+        with mock.patch.object(module, 'rgb_array', side_effect=ValueError('broken')):
+            self.export(canvas, cancel=False, expect_kmz=False)
+        self.assertIsNone(self.plugin.exporter)
+        self.assertTrue(any('broken' in str(m) for m in self.messages), self.messages)
+        self.assertFalse(os.path.exists(self.kmz_file))
 
     def tile_warnings(self):
         return [m for m in self.messages if 'exceeds the Garmin limit' in str(m)]

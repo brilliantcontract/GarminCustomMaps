@@ -45,7 +45,7 @@ from . import resources
 # Import the code for the dialog
 from .GarminCustomMap_dialog import GarminCustomMapDialog
 import os.path
-from qgis.PyQt.QtWidgets import QFileDialog, QDialog, QMessageBox, QProgressBar
+from qgis.PyQt.QtWidgets import QComboBox, QFileDialog, QDialog, QMessageBox, QProgressBar
 try:
     # Qt6 moved QAction to QtGui
     from qgis.PyQt.QtGui import QAction
@@ -202,7 +202,7 @@ class GarminCustomMap:
     # Dialog widgets whose values are remembered between runs, with their type
     SETTINGS = (('tile_height', int), ('tile_width', int), ('jpg_quality', int),
                 ('zoom', float), ('draworder', int), ('flag_optimize', bool),
-                ('flag_skip_empty', bool), ('flag_dbgMsg', bool))
+                ('flag_skip_empty', bool), ('flag_dbgMsg', bool), ('tile_limit', int))
 
     def restore_settings(self, dlg, settings):
         """Fill the dialog with the values used last time"""
@@ -211,6 +211,10 @@ class GarminCustomMap:
             key = 'GarminCustomMap/' + name
             if value_type is bool:
                 widget.setChecked(settings.value(key, widget.isChecked(), type=bool))
+            elif isinstance(widget, QComboBox):
+                index = settings.value(key, widget.currentIndex(), type=int)
+                if 0 <= index < widget.count():
+                    widget.setCurrentIndex(index)
             else:
                 widget.setValue(settings.value(key, widget.value(), type=value_type))
 
@@ -218,7 +222,12 @@ class GarminCustomMap:
         """Remember the dialog values for the next run"""
         for name, value_type in self.SETTINGS:
             widget = getattr(dlg, name)
-            value = widget.isChecked() if value_type is bool else widget.value()
+            if value_type is bool:
+                value = widget.isChecked()
+            elif isinstance(widget, QComboBox):
+                value = widget.currentIndex()
+            else:
+                value = widget.value()
             settings.setValue('GarminCustomMap/' + name, value)
 
     def run(self):
@@ -351,8 +360,8 @@ class GarminCustomMap:
                 skip_empty = dlg.flag_skip_empty.isChecked()
                 tile_height = int(dlg.tile_height.value())
                 tile_width = int(dlg.tile_width.value())
-                # TODO: add a field to specify max number of tiles
-                max_num_tiles = 100
+                # Garmin units show 100 or (newer ones) 500 tiles across all Custom Maps
+                max_num_tiles = (100, 500)[dlg.tile_limit.currentIndex()]
                 qual = int(dlg.jpg_quality.value())
                 dbg = dlg.flag_dbgMsg.isChecked()
                 # Set options for jpg-production
@@ -477,10 +486,6 @@ class GarminCustomMap:
         x_pix_trailing = x_extent % tile_width
         y_pix_trailing = y_extent % tile_height
 
-        # Check if number of tiles is below Garmins limit of 100 tiles (across all custom maps)
-        if n_tiles > 100:
-            self.iface.messageBar().pushMessage("WARNING", "The number of tiles ({}) exceeds the Garmin limit of 100 tiles! Not all tiles will be displayed on your GPS unit. Consider reducing your map size (extent or zoom-factor).".format(n_tiles), level=Qgis.MessageLevel.Warning, duration=5)
-
         # Check if size of tiles is below Garmins limit of 1 megapixel (for each tile)
         if (tile_width * tile_height) > max_pix:
             self.iface.messageBar().pushMessage("WARNING", "The number of pixels in a tile exceeds Garmins limit of 1 megapixel per tile! Images will not be displayed properly.", level=Qgis.MessageLevel.Warning, duration=5)
@@ -603,3 +608,7 @@ class GarminCustomMap:
         self.iface.messageBar().pushMessage('Done',
                 f'Produced {tiles_total} tiles, with {n_rows} rows and {n_cols} columns.{skipped}',
                 level=Qgis.MessageLevel.Success, duration=5)
+
+        # Check if number of tiles is below Garmins limit (across all custom maps)
+        if tiles_total > max_num_tiles:
+            self.iface.messageBar().pushMessage("WARNING", "The number of tiles ({}) exceeds the Garmin limit of {} tiles! Not all tiles will be displayed on your GPS unit. Consider reducing your map size (extent or zoom-factor).".format(tiles_total, max_num_tiles), level=Qgis.MessageLevel.Warning, duration=10)

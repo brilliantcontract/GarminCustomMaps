@@ -1,0 +1,24 @@
+name: Tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: QGIS ${{ matrix.qgis }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Oldest supported version, the long-term release (QGIS 3) and the latest release (QGIS 4)
+        qgis: ['3.22', 'ltr', 'stable']
+    container: qgis/qgis:${{ matrix.qgis }}
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run tests
+        run: python3 -m unittest discover -s tests -v

@@ -24,3 +24,12 @@ http://www.garmin.com/us/products/onthetrail/custommaps
 
 (C) Norwegian Institue for Nature Research (NINA), http://www.nina.no
 Stefan Blumentrath (email: stefan dot blumentrath at nina dot no)
+
+Development
+-----------
+
+The tests export small maps in a headless QGIS and check the resulting .kmz-file. Run them from the repository root with the Python that comes with QGIS:
+
+    make test
+
+GitHub Actions runs them in the official QGIS Docker images for QGIS 3.22, the current long-term release and the latest release (QGIS 4).

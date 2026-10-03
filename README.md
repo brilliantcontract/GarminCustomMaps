@@ -11,6 +11,8 @@ The number of Custom Map jpgs (Tiles in your .kmz-file) on a GPS unit is usually
 
 When "Skip production of empty tiles" is checked (default), tiles which are entirely white (white is the default background color) are not produced in order to minimize the consumption of the limited space on the GPS device.
 
+The export runs in the background with a progress bar and a Cancel button, so you can keep using QGIS. Maps larger than 128 megapixels are rendered in horizontal strips to limit memory use; a label that crosses the border between two strips may be cut.
+
 To upload the produced Custom Map to your GPS unit, copy the resulting *.kmz file into \Garmin\CustomMaps directory on the GPS unit.
 
 Compatible Garmin device series are:

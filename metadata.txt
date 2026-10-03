@@ -3,7 +3,7 @@ name=GarminCustomMap
 qgisMinimumVersion=3.22
 supportsQt6=True
 description=Export the current map canvas to a Garmin Custom Map (.kmz-file)
-version=3.4.1
+version=3.5.0
 author=Stefan Blumentrath - Norwegian Institute for Nature Research (NINA)
 email=stefan.blumentrath@nina.no
 
@@ -17,6 +17,13 @@ repository=https://github.com/brilliantcontract/GarminCustomMaps/
 
 # Uncomment the following line and add your changelog:
 changelog=
+  Version 3.5.0
+  - Runs on QGIS 3.22+ and QGIS 4 (Qt6)
+  - Fix reprojection of non-WGS84 projects with recent GDAL (upstream issue #32)
+  - "Skip empty tiles" now leaves entirely white tiles out of the kmz
+  - Temporary files are always cleaned up, even when an export fails
+  - Remove the plugin toolbar on unload
+  - Update the Garmin size-limits link, Makefile (pyrcc5) and plugin_upload.py (Python 3)
   Version 3.4.1
   - add optimization.py to Makefile
   Version 3.4

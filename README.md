@@ -1,6 +1,6 @@
 ﻿#GarminCustomMap
 
-The GarminCustomMap plugin for QGIS 2.0 and later exports the current map canvas to a .kmz-file, which is compatible with Garmin`s Custom Maps format for handheld GPS units. That way individual maps styled in QGIS can be used as background (raster) maps on the compatible Garmin GPS units, like Alpha, Astro, Dakota, Oregon, Colorado, GPSMAP 62 series, GPSMAP 64 series, GPSMAP 78 series, Edge 800, Montana, Rino, eTrex® 20 and 30.
+The GarminCustomMap plugin for QGIS 3.22 and later (including QGIS 4) exports the current map canvas to a .kmz-file, which is compatible with Garmin`s Custom Maps format for handheld GPS units. That way individual maps styled in QGIS can be used as background (raster) maps on the compatible Garmin GPS units, like Alpha, Astro, Dakota, Oregon, Colorado, GPSMAP 62 series, GPSMAP 64 series, GPSMAP 78 series, Edge 800, Montana, Rino, eTrex® 20 and 30.
 
 A Garmin Custom Map (.kmz-file) is a zip-file containing, one or more jpg-images (tiles), and the georeference infomation in a text-file (doc.kml).
 Each jpg-file is limited to 1 megapixel (e.g. 1024 x 1024 pixel or 2048 x 512 pixel) and should notr be heavier than 3MB. The time for drawing the map on your GPS unit is affected by the file size of the jpgs (which can be controlled by tile size (number of rows and columns) and JPG-compression (quality)).
@@ -17,7 +17,7 @@ Compatible Garmin device series are:
 Alpha, Astro, Dakota, Oregon, Colorado, GPSMAP 62 series, GPSMAP 64 series, GPSMAP 78 series, Edge 800, Montana, Rino, eTrex® 20 and 30
 
 For more technical details and limitations regarding Garmin Custom Maps see:
-https://forums.garmin.com/showthread.php?t=2646
+https://support.garmin.com/en-US/?faq=UcO3cFueS12IwCnizrJjeA
 
 For more information on Garmin Custom Maps and compatible GPS units see:
 http://www.garmin.com/us/products/onthetrail/custommaps

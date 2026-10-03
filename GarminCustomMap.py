@@ -35,6 +35,7 @@ import os
 import shutil
 import zipfile
 import tempfile
+import numpy as np
 from xml.sax.saxutils import escape
 
 from math import *
@@ -89,6 +90,8 @@ class GarminCustomMap:
         # TODO: We are going to let the user set this up in a future iteration
         self.toolbar = self.iface.addToolBar(u'GarminCustomMap')
         self.toolbar.setObjectName(u'GarminCustomMap')
+        # The export running in the background, if any
+        self.exporter = None
 
     # noinspection PyMethodMayBeStatic
     def tr(self, message):
@@ -190,6 +193,8 @@ class GarminCustomMap:
 
     def unload(self):
         """Removes the plugin menu item and icon from QGIS GUI."""
+        if self.exporter is not None:
+            self.exporter.cancel()
         for action in self.actions:
             self.iface.removePluginMenu(
                 self.tr(u'&GarminCustomMap'),
@@ -202,6 +207,10 @@ class GarminCustomMap:
 
     def run(self):
         """Run method that performs all the real work"""
+        if self.exporter is not None:
+            self.iface.messageBar().pushMessage('GarminCustomMap', 'An export is already running.',
+                                                level=Qgis.MessageLevel.Info, duration=5)
+            return
         # prepare dialog parameters
         settings = QSettings()
         lastDir = settings.value("/UI/lastProjectDir")
@@ -340,75 +349,270 @@ class GarminCustomMap:
                 draworder = dlg.draworder.value()
                 zoom = float(dlg.zoom.value())
                 max_pix = (1024 * 1024)
-                # Create tmp-folder; it is removed again even if the export fails
-                out_folder = tempfile.mkdtemp('_tmp', 'gcm_')
-                if dbg: dbgMsg(f'Temporary output folder: {out_folder}')
-                try:
-                    self.export(kmz_file, out_folder, mapSettings, mapRect, srs, zoom, optimize,
-                                skip_empty, tile_width, tile_height, max_pix, max_num_tiles,
-                                options, draworder, dbg)
-                finally:
-                    shutil.rmtree(out_folder, ignore_errors=True)
-                    # Clear progressbar and statusbar
-                    iface.messageBar().clearWidgets()
-                    iface.statusBarIface().clearMessage()
 
-    def export(self, kmz_file, out_folder, mapSettings, mapRect, srs, zoom, optimize,
-               skip_empty, tile_width, tile_height, max_pix, max_num_tiles,
-               options, draworder, dbg):
-        """Render the map canvas and write it as tiles into kmz_file"""
-        SourceCRS = str(srs.authid())
-        in_file = os.path.splitext(os.path.basename(kmz_file))[0]
-        out_put = os.path.join(out_folder, in_file)
-        input_file = out_put + u'.png'
+                # Every tile holds at most max_pix pixels, so this many tiles are needed at least
+                out_pixels = round(width * zoom) * round(height * zoom)
+                min_tiles = -(-out_pixels // max_pix)
+                if min_tiles > MAX_GARMIN_TILES:
+                    answer = QMessageBox.question(
+                        self.iface.mainWindow(), "Very large map",
+                        f"With zoom factor {zoom} the map has {out_pixels / 1e6:,.0f} megapixels "
+                        f"and needs at least {min_tiles:,} tiles, but Garmin GPS units show at most "
+                        f"{MAX_GARMIN_TILES} tiles. The export may take a long time and a lot of disk space.\n\n"
+                        "Export anyway?")
+                    if answer != QMessageBox.StandardButton.Yes:
+                        return
 
-        # Initialise temporary output image
+                self.exporter = GarminExport(
+                    self.iface, kmz_file, mapSettings, mapRect, srs, zoom, optimize,
+                    skip_empty, tile_width, tile_height, max_pix, max_num_tiles,
+                    options, draworder, dbg)
+                self.exporter.done.connect(self.export_done)
+                self.exporter.start()
+
+    def export_done(self):
+        self.exporter = None
+
+
+# Garmin units show at most 500 tiles across all Custom Maps (most only 100)
+MAX_GARMIN_TILES = 500
+# Maps up to this size are rendered as one image; larger ones in horizontal
+# strips, so memory use stays bounded (labels crossing a strip border may be cut)
+MAX_STRIP_PIXELS = 128 * 1024 * 1024
+
+
+def rgb_array(image):
+    """A (rows, columns, 3) uint8 numpy view of a Format_RGB888 QImage.
+
+    The view shares the image's memory, so keep the image while using it."""
+    width, height = image.width(), image.height()
+    bits = image.constBits()
+    bits.setsize(image.sizeInBytes())
+    # Rows are padded to bytesPerLine
+    rows = np.frombuffer(bits, np.uint8).reshape(height, image.bytesPerLine())
+    return rows[:, :width * 3].reshape(height, width, 3)
+
+
+class GarminExport(QObject):
+    """Exports the map in the background: renders it in strips into a GeoTIFF
+    (keeping the UI responsive), then cuts it into tiles in a QgsTask."""
+
+    # Emitted once the export finished, failed or was cancelled
+    done = pyqtSignal()
+
+    def __init__(self, iface, kmz_file, mapSettings, mapRect, srs, zoom, optimize,
+                 skip_empty, tile_width, tile_height, max_pix, max_num_tiles,
+                 options, draworder, dbg):
+        super().__init__()
+        self.iface = iface
+        self.kmz_file = kmz_file
+        self.mapRect = mapRect
+        self.srs = srs
+        self.dbg = dbg
+        self.tile_args = dict(optimize=optimize, skip_empty=skip_empty, tile_width=tile_width,
+                              tile_height=tile_height, max_pix=max_pix, max_num_tiles=max_num_tiles,
+                              options=options, draworder=draworder, dbg=dbg)
         # The DPI is left unchanged, so zooming renders a larger map scale (issue #22)
-        width = round(mapSettings.outputSize().width() * zoom)
-        height = round(mapSettings.outputSize().height() * zoom)
-        mapSettings.setOutputSize(QSize(width, height))
-        mapSettings.setExtent(mapRect)
-        mapSettings.setFlags(Qgis.MapSettingsFlags(Qgis.MapSettingsFlag.Antialiasing | Qgis.MapSettingsFlag.UseAdvancedEffects | Qgis.MapSettingsFlag.ForceVectorOutput | Qgis.MapSettingsFlag.DrawLabeling))
+        self.width = round(mapSettings.outputSize().width() * zoom)
+        self.height = round(mapSettings.outputSize().height() * zoom)
+        self.settings = QgsMapSettings(mapSettings)
+        self.settings.setFlags(Qgis.MapSettingsFlags(Qgis.MapSettingsFlag.Antialiasing | Qgis.MapSettingsFlag.UseAdvancedEffects | Qgis.MapSettingsFlag.ForceVectorOutput | Qgis.MapSettingsFlag.DrawLabeling))
+        # White is what "skip empty tiles" looks for
+        self.settings.setBackgroundColor(QColor(255, 255, 255))
+        self.strip_height = max(1, min(self.height, MAX_STRIP_PIXELS // self.width))
+        self.row = 0
+        self.job = None
+        self.task = None
+        self.cancelled = False
 
-        # create output image and initialize it
-        image = QImage(QSize(width, height), QImage.Format.Format_RGB555)
-        image.fill(qRgb(255, 255, 255))
-
-        # adjust map canvas (renderer) to the image size and render
-        imagePainter = QPainter(image)
-        mapRenderer = QgsMapRendererCustomPainterJob(mapSettings, imagePainter)
-        mapRenderer.start()
-        mapRenderer.waitForFinished()
-        imagePainter.end()
-
-        # Save the image
-        # This is the full size image of the whole extent
-        # It is temporary because later it gets divided into smaller JPGs according to the Garmin Custom Map constraints
-        if dbg: dbgMsg(f'Initial full-extent render file: {input_file}')
-        if not image.save(input_file, "png"):
-            raise IOError(f'Could not write temporary image {input_file}')
+    def start(self):
+        # Create tmp-folder; it is removed again when the export ends, however it ends
+        self.out_folder = tempfile.mkdtemp('_tmp', 'gcm_')
+        if self.dbg: dbgMsg(f'Temporary output folder: {self.out_folder}')
+        self.render_file = os.path.join(self.out_folder, 'render.tif')
 
         # Georeference values of the rendered image
-        ULx, ULy = mapRect.xMinimum(), mapRect.yMaximum()
-        LRx, LRy = mapRect.xMaximum(), mapRect.yMinimum()
-        pixel_width = (LRx - ULx) / width
-        pixel_height = (LRy - ULy) / height
+        self.pixel_width = (self.mapRect.xMaximum() - self.mapRect.xMinimum()) / self.width
+        self.pixel_height = (self.mapRect.yMinimum() - self.mapRect.yMaximum()) / self.height
+        self.dataset = gdal.GetDriverByName('GTiff').Create(
+            self.render_file, self.width, self.height, 3, gdalconst.GDT_Byte,
+            options=['TILED=YES', 'BIGTIFF=IF_SAFER'])
+        if self.dataset is None:
+            self.fail(f'Could not create temporary image {self.render_file} ({gdal.GetLastErrorMsg()})')
+            return
+        self.dataset.SetGeoTransform([self.mapRect.xMinimum(), self.pixel_width, 0,
+                                      self.mapRect.yMaximum(), 0, self.pixel_height])
+        self.dataset.SetProjection(self.srs.toWkt())
+
+        # Progress bar with a cancel button
+        self.message = self.iface.messageBar().createMessage('Rendering the Garmin Custom Map...')
+        self.progress = QProgressBar()
+        self.progress.setMaximum(100)
+        self.progress.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self.message.layout().addWidget(self.progress)
+        cancel = QPushButton('Cancel')
+        cancel.clicked.connect(self.cancel)
+        self.message.layout().addWidget(cancel)
+        self.iface.messageBar().pushWidget(self.message, Qgis.MessageLevel.Info)
+
+        self.render_next_strip()
+
+    def render_next_strip(self):
+        """Render the next horizontal strip of the map without blocking the UI"""
+        rows = min(self.strip_height, self.height - self.row)
+        top = self.mapRect.yMaximum() + self.row * self.pixel_height
+        bottom = self.mapRect.yMaximum() + (self.row + rows) * self.pixel_height
+        settings = QgsMapSettings(self.settings)
+        settings.setOutputSize(QSize(self.width, rows))
+        settings.setExtent(QgsRectangle(self.mapRect.xMinimum(), bottom, self.mapRect.xMaximum(), top))
+        if self.dbg: dbgMsg(f'Rendering rows {self.row} to {self.row + rows} of {self.height}')
+        self.strip_rows = rows
+        self.job = QgsMapRendererParallelJob(settings)
+        self.job.finished.connect(self.strip_rendered)
+        self.job.start()
+
+    def strip_rendered(self):
+        if self.cancelled:
+            return
+        image = self.job.renderedImage().convertToFormat(QImage.Format.Format_RGB888)
+        self.job = None
+        strip = rgb_array(image)
+        for band in range(3):
+            self.dataset.GetRasterBand(band + 1).WriteArray(strip[:, :, band], 0, self.row)
+        strip = image = None
+        self.row += self.strip_rows
+        # Rendering is the first half of the progress bar
+        self.progress.setValue(round(50 * self.row / self.height))
+        if self.row < self.height:
+            self.render_next_strip()
+            return
+
+        self.dataset.FlushCache()
+        self.dataset = None
+        if self.dbg: dbgMsg(f'Initial full-extent render file: {self.render_file}')
+        self.message.setText('Writing the Garmin Custom Map tiles...')
+        self.task = TileTask(self.kmz_file, self.render_file, self.out_folder,
+                             str(self.srs.authid()), **self.tile_args)
+        self.task.progressChanged.connect(self.task_progress)
+        self.task.taskCompleted.connect(self.tiles_written)
+        self.task.taskTerminated.connect(self.tiles_failed)
+        QgsApplication.taskManager().addTask(self.task)
+
+    @pyqtSlot(float)
+    def task_progress(self, progress):
+        # Writing tiles is the second half of the progress bar
+        self.progress.setValue(50 + round(progress / 2))
+
+    def cancel(self):
+        self.cancelled = True
+        if self.job is not None:
+            self.job.cancel()
+            self.job = None
+            self.finish()
+            self.iface.messageBar().pushMessage('Cancelled', 'The Garmin Custom Map was not exported.',
+                                                level=Qgis.MessageLevel.Info, duration=5)
+        elif self.task is not None:
+            # tiles_failed() finishes once the task stopped
+            self.task.cancel()
+
+    def tiles_written(self):
+        task = self.task
+        self.finish()
+        for warning in task.warnings:
+            self.iface.messageBar().pushMessage('WARNING', warning, level=Qgis.MessageLevel.Warning, duration=10)
+        skipped = f' {task.empty_tiles} empty tiles were skipped.' if task.empty_tiles else ''
+        self.iface.messageBar().pushMessage('Done',
+                f'Produced {task.tiles_total} tiles, with {task.n_rows} rows and {task.n_cols} columns.{skipped}',
+                level=Qgis.MessageLevel.Success, duration=5)
+
+    def tiles_failed(self):
+        error = self.task.error
+        if error is None or self.cancelled:
+            self.finish()
+            self.iface.messageBar().pushMessage('Cancelled', 'The Garmin Custom Map was not exported.',
+                                                level=Qgis.MessageLevel.Info, duration=5)
+        else:
+            self.fail(error)
+
+    def fail(self, error):
+        self.finish()
+        self.iface.messageBar().pushMessage('Error', f'Could not export the Garmin Custom Map: {error}',
+                                            level=Qgis.MessageLevel.Critical, duration=0)
+
+    def finish(self):
+        """Clean up after the export, however it ended"""
+        task, self.task = self.task, None
+        self.dataset = None
+        shutil.rmtree(self.out_folder, ignore_errors=True)
+        if task is not None and task.kmz_started and task.tiles_total is None and os.path.exists(self.kmz_file):
+            # Do not leave a half-written map behind
+            os.remove(self.kmz_file)
+        # Clear progressbar and statusbar
+        self.iface.messageBar().clearWidgets()
+        self.iface.statusBarIface().clearMessage()
+        self.done.emit()
+
+
+class TileTask(QgsTask):
+    """Reprojects the rendered map if needed and writes it as tiles into the kmz.
+
+    Runs in a background thread, so it must not touch the GUI."""
+
+    def __init__(self, kmz_file, input_file, out_folder, SourceCRS, optimize,
+                 skip_empty, tile_width, tile_height, max_pix, max_num_tiles,
+                 options, draworder, dbg):
+        super().__init__('Export Garmin Custom Map', QgsTask.Flag.CanCancel)
+        self.kmz_file = kmz_file
+        self.input_file = input_file
+        self.out_folder = out_folder
+        self.SourceCRS = SourceCRS
+        self.optimize = optimize
+        self.skip_empty = skip_empty
+        self.tile_width = tile_width
+        self.tile_height = tile_height
+        self.max_pix = max_pix
+        self.max_num_tiles = max_num_tiles
+        self.options = options
+        self.draworder = draworder
+        self.dbg = dbg
+        self.warnings = []
+        self.error = None
+        self.tiles_total = None
+        self.empty_tiles = 0
+        self.kmz_started = False
+
+    def run(self):
+        try:
+            return self.write_tiles()
+        except Exception as e:
+            self.error = str(e)
+            return False
+
+    def gdal_progress(self, fraction, message, data):
+        """GDAL callback: report progress, return 0 to stop when cancelled"""
+        self.setProgress(fraction * 20)
+        return 0 if self.isCanceled() else 1
+
+    def write_tiles(self):
+        dbg = self.dbg
+        tile_width, tile_height = self.tile_width, self.tile_height
+        input_file = self.input_file
+        in_file = os.path.splitext(os.path.basename(self.kmz_file))[0]
 
         # Warp the exported image to WGS84 if necessary
-        if SourceCRS != 'EPSG:4326':
-            output_geofile = out_put + "_wgs84.tif"
-            # Georeference the image through a VRT, so nothing has to be written next to the PNG
-            georef = gdal.Translate('', input_file, format='VRT',
-                                    outputBounds=[ULx, ULy, LRx, LRy], outputSRS=srs.toWkt())
+        if self.SourceCRS != 'EPSG:4326':
+            output_geofile = os.path.join(self.out_folder, 'render_wgs84.tif')
             # Areas outside the map are filled white (issue #32: the warped VRT is read-only)
-            warped = gdal.Warp(output_geofile, georef, format='GTiff',
+            warped = gdal.Warp(output_geofile, input_file, format='GTiff',
                                dstSRS=QgsCoordinateReferenceSystem('EPSG:4326').toWkt(),
-                               warpOptions=['INIT_DEST=255'])
+                               warpOptions=['INIT_DEST=255'],
+                               creationOptions=['TILED=YES', 'BIGTIFF=IF_SAFER'],
+                               callback=self.gdal_progress)
+            if self.isCanceled():
+                return False
             if warped is None:
                 raise IOError(f'Could not reproject the map to WGS84 ({gdal.GetLastErrorMsg()})')
-            ULx, pixel_width, _, ULy, _, pixel_height = warped.GetGeoTransform()
             warped = None
-            georef = None
             input_file = output_geofile
 
         # Here the code breaks up the initial full-extent render file
@@ -418,6 +622,7 @@ class GarminCustomMap:
             raise IOError(f'Could not open {input_file} ({gdal.GetLastErrorMsg()})')
         x_extent = indataset.RasterXSize
         y_extent = indataset.RasterYSize
+        ULx, pixel_width, _, ULy, _, pixel_height = indataset.GetGeoTransform()
 
         # Print some GDAL info to messages:
         if dbg:
@@ -428,15 +633,15 @@ class GarminCustomMap:
             dbgMsg("Geotransform: {}".format([ULx, pixel_width, 0, ULy, 0, pixel_height]))
             dbgMsg("-------------------")
 
-        if optimize:
+        if self.optimize:
             if dbg: dbgMsg("*--- Optimizing ---*")
             tile_width, tile_height = optimize_fac (
-                x_extent, y_extent, max_pix, max_num_tiles)
+                x_extent, y_extent, self.max_pix, self.max_num_tiles)
             if (tile_width, tile_height) == (1, 1):
                 tile_width, tile_height = 1024, 1024
                 if dbg:
                     dbgMsg("Done, couldn't find a good solution with the following constraints:")
-                    dbgMsg("Max tile size: {} (1024 x 1024), max number of tiles: {}".format(max_pix, max_num_tiles))
+                    dbgMsg("Max tile size: {} (1024 x 1024), max number of tiles: {}".format(self.max_pix, self.max_num_tiles))
             else:
                 tile_width, tile_height = int (tile_width), int (tile_height)
                 if dbg:
@@ -455,26 +660,20 @@ class GarminCustomMap:
 
         # Check if number of tiles is below Garmins limit of 100 tiles (across all custom maps)
         if n_tiles > 100:
-            iface.messageBar().pushMessage("WARNING", "The number of tiles ({}) exceeds the Garmin limit of 100 tiles! Not all tiles will be displayed on your GPS unit. Consider reducing your map size (extent or zoom-factor).".format(n_tiles), level=Qgis.MessageLevel.Warning, duration=5)
+            self.warnings.append("The number of tiles ({}) exceeds the Garmin limit of 100 tiles! Not all tiles will be displayed on your GPS unit. Consider reducing your map size (extent or zoom-factor).".format(n_tiles))
 
         # Check if size of tiles is below Garmins limit of 1 megapixel (for each tile)
-        if (tile_width * tile_height) > max_pix:
-            iface.messageBar().pushMessage("WARNING", "The number of pixels in a tile exceeds Garmins limit of 1 megapixel per tile! Images will not be displayed properly.", level=Qgis.MessageLevel.Warning, duration=5)
-
-        progressMessageBar = iface.messageBar().createMessage(f'Producing total of {n_tiles} tiles...')
-        progress = QProgressBar()
-        progress.setMaximum(n_tiles)
-        progress.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        progressMessageBar.layout().addWidget(progress)
-        iface.messageBar().pushWidget(progressMessageBar, Qgis.MessageLevel.Info)
+        if (tile_width * tile_height) > self.max_pix:
+            self.warnings.append("The number of pixels in a tile exceeds Garmins limit of 1 megapixel per tile! Images will not be displayed properly.")
 
         mem_driver = gdal.GetDriverByName("MEM")
         jpg_driver = gdal.GetDriverByName("JPEG")
         kml_name = escape(in_file)
 
         # Open kmz and kml for writing
-        with zipfile.ZipFile(kmz_file, 'w') as kmz, \
-                open(os.path.join(out_folder, 'doc.kml'), 'w', encoding='utf-8') as kml:
+        self.kmz_started = True
+        with zipfile.ZipFile(self.kmz_file, 'w') as kmz, \
+                open(os.path.join(self.out_folder, 'doc.kml'), 'w', encoding='utf-8') as kml:
 
             # Write kml header
             kml.write('<?xml version="1.0" encoding="UTF-8"?>\n')
@@ -494,6 +693,8 @@ class GarminCustomMap:
 
                 # (Within row-loop) Loop through columns
                 for c in range(1, n_cols + 1):
+                    if self.isCanceled():
+                        return False
                     # If this is the last column, set tile width to trailing pixels
                     col_width = x_pix_trailing if c == n_cols and x_pix_trailing > 0 else tile_width
 
@@ -504,7 +705,7 @@ class GarminCustomMap:
                     t_bands = [indataset.GetRasterBand(b).ReadAsArray(x_offset, y_offset, col_width, row_height)
                                for b in (1, 2, 3)]
 
-                    if skip_empty and all(band.min() == 255 for band in t_bands):
+                    if self.skip_empty and all(band.min() == 255 for band in t_bands):
                         # Entirely white tile: leave it out of the kmz to save Garmin's tile budget
                         empty_tiles += 1
                         if dbg: dbgMsg(f'Skipping empty tile: {tile_name}')
@@ -516,9 +717,9 @@ class GarminCustomMap:
                             tile.GetRasterBand(b).WriteArray(band)
 
                         # Translate MEM dataset to JPG
-                        temp_tile_file = os.path.join(out_folder, tile_name)
+                        temp_tile_file = os.path.join(self.out_folder, tile_name)
                         # Let's add a COMMENT, just for fun
-                        tile_options = options + [f'COMMENT="Tile ({r}, {c}) of ({n_rows}, {n_cols}). Produced by GarminCustomMap"']
+                        tile_options = self.options + [f'COMMENT="Tile ({r}, {c}) of ({n_rows}, {n_cols}). Produced by GarminCustomMap"']
                         jpg_driver.CreateCopy(temp_tile_file, tile, options=tile_options)
                         tile = None
 
@@ -539,7 +740,7 @@ class GarminCustomMap:
                         # Write kml-tags for each tile (Name, DrawOrder, JPEG-Reference, GroundOverlay)
                         kml.write('    <GroundOverlay>\n')
                         kml.write('        <name>' + kml_name + ' Tile ' + str(r) + '_' + str(c) + '</name>\n')
-                        kml.write('        <drawOrder>' + str(draworder) + '</drawOrder>\n')
+                        kml.write('        <drawOrder>' + str(self.draworder) + '</drawOrder>\n')
                         kml.write('        <Icon>\n')
                         kml.write('          <href>' + escape(tile_name) + '</href>\n')
                         kml.write('        </Icon>\n')
@@ -555,10 +756,8 @@ class GarminCustomMap:
                     # Calculate new X-offset
                     x_offset = (x_offset + col_width)
                     done_tiles = (done_tiles + 1)
-                    # Update progress bar
-                    progress.setValue(done_tiles)
-                    # Output message in status bar, too
-                    iface.statusBarIface().showMessage(f'Produced tile: {done_tiles}')
+                    # Tiling is the last 80 % of this task's progress
+                    self.setProgress(20 + 80 * done_tiles / n_tiles)
                 # Calculate new Y-offset
                 y_offset = (y_offset + row_height)
 
@@ -571,11 +770,9 @@ class GarminCustomMap:
             indataset = None
 
             # Add .kml to .kmz-file
-            kmz.write(os.path.join(out_folder, u'doc.kml'), u'doc.kml')
+            kmz.write(os.path.join(self.out_folder, u'doc.kml'), u'doc.kml')
 
-        # Give success message
-        tiles_total = done_tiles - empty_tiles
-        skipped = f' {empty_tiles} empty tiles were skipped.' if empty_tiles else ''
-        iface.messageBar().pushMessage('Done',
-                f'Produced {tiles_total} tiles, with {n_rows} rows and {n_cols} columns.{skipped}',
-                level=Qgis.MessageLevel.Success, duration=5)
+        self.n_rows, self.n_cols = n_rows, n_cols
+        self.empty_tiles = empty_tiles
+        self.tiles_total = done_tiles - empty_tiles
+        return True

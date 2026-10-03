@@ -20,8 +20,8 @@
  *                                                                         *
  ***************************************************************************/
 """
-from PyQt5.QtCore import *
-from PyQt5.QtGui import *
+from qgis.PyQt.QtCore import *
+from qgis.PyQt.QtGui import *
 
 from qgis.core import *
 from qgis.gui import *
@@ -50,10 +50,15 @@ from . import resources
 # Import the code for the dialog
 from .GarminCustomMap_dialog import GarminCustomMapDialog
 import os.path
-from PyQt5.QtWidgets import QAction, QFileDialog, QDialog, QMessageBox, QProgressBar
+from qgis.PyQt.QtWidgets import QFileDialog, QDialog, QMessageBox, QProgressBar
+try:
+    # Qt6 moved QAction to QtGui
+    from qgis.PyQt.QtGui import QAction
+except ImportError:
+    from qgis.PyQt.QtWidgets import QAction
 
 def dbgMsg (message):
-    QgsMessageLog.logMessage(message, "GarminCustomMap", level=Qgis.Info)
+    QgsMessageLog.logMessage(message, "GarminCustomMap", level=Qgis.MessageLevel.Info)
 
 class GarminCustomMap:
     """QGIS Plugin Implementation."""
@@ -236,10 +241,10 @@ class GarminCustomMap:
         # TODO: This and the actual processing section should be separated out from the run in another refactor, right now the UI is blocked while we wait for processing
         out_putFile = QgsEncodingFileDialog(None, "Select output file", lastDir, fileFilter)
         out_putFile.setDefaultSuffix("kmz")
-        out_putFile.setFileMode(QFileDialog.AnyFile)
-        out_putFile.setAcceptMode(QFileDialog.AcceptSave)
+        out_putFile.setFileMode(QFileDialog.FileMode.AnyFile)
+        out_putFile.setAcceptMode(QFileDialog.AcceptMode.AcceptSave)
         # out_putFile.setConfirmOverwrite(True)
-        if out_putFile.exec_() == QDialog.Accepted:
+        if out_putFile.exec() == QDialog.DialogCode.Accepted:
             kmz_file = out_putFile.selectedFiles()[0]
             # Get mapCanvas and mapRenderer variables
             canvas = self.iface.mapCanvas()
@@ -279,14 +284,14 @@ class GarminCustomMap:
                     "The number of rows and columns in the exported image "
                     "will be affected by reprojecting to WGS84 and estimates for "
                     "the number of tiles etc. in the \"Setting hints\"-Tab will be incorrect!")
-                    proj_msg.exec_()
+                    proj_msg.exec()
 
                 widget = iface.messageBar().createMessage("WARNING", "Project CRS differs from WGS84 (EPSG: 4326)")
                 button = QPushButton(widget)
                 button.setText("Info")
                 button.pressed.connect(projWarning)
                 widget.layout().addWidget(button)
-                iface.messageBar().pushWidget(widget, Qgis.Critical, duration=10)
+                iface.messageBar().pushWidget(widget, Qgis.MessageLevel.Critical, duration=10)
 
             # create the dialog
             dlg = GarminCustomMapDialog()
@@ -346,7 +351,7 @@ class GarminCustomMap:
             # Show the dialog
             # TODO: Should be doing this in a separate signal call, connected to the OK button, this way the run method blocks the UI
             dlg.show()
-            result = dlg.exec_()
+            result = dlg.exec()
             # See if OK was pressed
             if result == 1:
                 # Set variables
@@ -382,10 +387,10 @@ class GarminCustomMap:
                 height = round(mapSettings.outputSize().height() * zoom)
                 mapSettings.setOutputSize(QSize(width, height))
                 mapSettings.setExtent(mapRect)
-                mapSettings.setFlags(QgsMapSettings.Flags(QgsMapSettings.Antialiasing | QgsMapSettings.UseAdvancedEffects | QgsMapSettings.ForceVectorOutput | QgsMapSettings.DrawLabeling))
+                mapSettings.setFlags(Qgis.MapSettingsFlags(Qgis.MapSettingsFlag.Antialiasing | Qgis.MapSettingsFlag.UseAdvancedEffects | Qgis.MapSettingsFlag.ForceVectorOutput | Qgis.MapSettingsFlag.DrawLabeling))
 
                 # create output image and initialize it
-                image = QImage(QSize(width, height), QImage.Format_RGB555)
+                image = QImage(QSize(width, height), QImage.Format.Format_RGB555)
                 image.fill(qRgb(255, 255, 255))
 
                 # adjust map canvas (renderer) to the image size and render
@@ -442,8 +447,7 @@ class GarminCustomMap:
                     # in_CRS = srs.toWkt().encode('UTF-8')
                     # print type(in_CRS)
                     # Define output CRS
-                    out_CRS = QgsCoordinateReferenceSystem(4326, QgsCoordinateReferenceSystem.EpsgCrsId).toWkt()
-                    # out_CRS = QgsCoordinateReferenceSystem(4326, QgsCoordinateReferenceSystem.EpsgCrsId).toWkt().encode('UTF-8')
+                    out_CRS = QgsCoordinateReferenceSystem('EPSG:4326').toWkt()
                     # print type(out_CRS)
                     # Open input dataset
                     input_dataset = gdal.Open(input_file)
@@ -516,18 +520,18 @@ class GarminCustomMap:
 
                 # Check if number of tiles is below Garmins limit of 100 tiles (across all custom maps)
                 if n_tiles > 100:
-                    iface.messageBar().pushMessage("WARNING", "The number of tiles ({}) exceeds the Garmin limit of 100 tiles! Not all tiles will be displayed on your GPS unit. Consider reducing your map size (extent or zoom-factor).".format(n_tiles), level=Qgis.Warning, duration=5)
+                    iface.messageBar().pushMessage("WARNING", "The number of tiles ({}) exceeds the Garmin limit of 100 tiles! Not all tiles will be displayed on your GPS unit. Consider reducing your map size (extent or zoom-factor).".format(n_tiles), level=Qgis.MessageLevel.Warning, duration=5)
 
                 # Check if size of tiles is below Garmins limit of 1 megapixel (for each tile)
                 if (tile_width * tile_height) > max_pix:
-                    iface.messageBar().pushMessage("WARNING", "The number of pixels in a tile exceeds Garmins limit of 1 megapixel per tile! Images will not be displayed properly.", level=Qgis.Warning, duration=5)
+                    iface.messageBar().pushMessage("WARNING", "The number of pixels in a tile exceeds Garmins limit of 1 megapixel per tile! Images will not be displayed properly.", level=Qgis.MessageLevel.Warning, duration=5)
 
                 progressMessageBar = iface.messageBar().createMessage(f'Producing total of {n_tiles} tiles...')
                 progress = QProgressBar()
                 progress.setMaximum(n_tiles)
-                progress.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                progress.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
                 progressMessageBar.layout().addWidget(progress)
-                iface.messageBar().pushWidget(progressMessageBar, Qgis.Info)
+                iface.messageBar().pushWidget(progressMessageBar, Qgis.MessageLevel.Info)
 
                 # Open kmz and kml for writing
                 # TODO: Add try:catch to make sure we have permission to write to files
@@ -672,4 +676,4 @@ class GarminCustomMap:
                 tiles_total = n_tiles - empty_tiles
                 iface.messageBar().pushMessage('Done',
                         f'Produced {tiles_total} tiles, with {n_rows} rows and {n_cols} columns.',
-                        level=Qgis.Success, duration=5)
+                        level=Qgis.MessageLevel.Success, duration=5)

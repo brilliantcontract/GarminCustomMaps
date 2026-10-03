@@ -59,8 +59,6 @@ PEP8EXCLUDE=pydev,resources.py,conf.py,third_party,ui
 # Normally you would not need to edit below here
 #################################################
 
-HELP = help/build/html
-
 PLUGIN_UPLOAD = $(c)/plugin_upload.py
 
 RESOURCE_SRC=$(shell grep '^ *<file' resources.qrc | sed 's@</file>@@g;s/.*>//g' | tr '\n' ' ')
@@ -97,10 +95,10 @@ test: compile transcompile
 	@echo "e.g. source run-env-linux.sh <path to qgis install>; make test"
 	@echo "----------------------"
 
-deploy: compile doc transcompile
+deploy: compile transcompile
 	@echo
 	@echo "------------------------------------------"
-	@echo "Deploying plugin to your .qgis2 directory."
+	@echo "Deploying plugin to your QGIS profile."
 	@echo "------------------------------------------"
 	# The deploy  target only works on unix like operating system where
 	# the Python plugin directory is located at:
@@ -110,8 +108,7 @@ deploy: compile doc transcompile
 	cp -vf $(UI_FILES) $(HOME)/$(QGISDIR)/python/plugins/$(PLUGINNAME)
 	cp -vf $(COMPILED_RESOURCE_FILES) $(HOME)/$(QGISDIR)/python/plugins/$(PLUGINNAME)
 	cp -vf $(EXTRAS) $(HOME)/$(QGISDIR)/python/plugins/$(PLUGINNAME)
-	cp -vfr i18n $(HOME)/$(QGISDIR)/python/plugins/$(PLUGINNAME)
-	#cp -vfr $(HELP) $(HOME)/$(QGISDIR)/python/plugins/$(PLUGINNAME)/help
+	if [ -d i18n ]; then cp -vfr i18n $(HOME)/$(QGISDIR)/python/plugins/$(PLUGINNAME); fi
 
 # The dclean target removes compiled python files from plugin directory
 # also deletes any .git entry
@@ -192,13 +189,6 @@ clean:
 	@echo "------------------------------------"
 	rm $(COMPILED_UI_FILES) $(COMPILED_RESOURCE_FILES)
 
-doc:
-	@echo
-	@echo "------------------------------------"
-	@echo "Building documentation using sphinx."
-	@echo "------------------------------------"
-	#cd help; make html
-
 pylint:
 	@echo
 	@echo "-----------------"
@@ -207,9 +197,8 @@ pylint:
 	@pylint --reports=n --rcfile=pylintrc . || true
 	@echo
 	@echo "----------------------"
-	@echo "If you get a 'no module named qgis.core' error, try sourcing"
-	@echo "the helper script we have provided first then run make pylint."
-	@echo "e.g. source run-env-linux.sh <path to qgis install>; make pylint"
+	@echo "If you get a 'no module named qgis.core' error, run make pylint"
+	@echo "with the Python that comes with QGIS."
 	@echo "----------------------"
 
 

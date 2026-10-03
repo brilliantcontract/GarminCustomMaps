@@ -28,7 +28,6 @@ from qgis.gui import *
 from qgis.utils import *
 
 from osgeo import gdal
-from osgeo import gdalnumeric
 from osgeo import gdalconst
 from osgeo import osr
 
@@ -46,11 +45,11 @@ import time
 from .optimization import optimize_fac
 
 # Initialize Qt resources from file resources.py
-from GarminCustomMap import resources
+from . import resources
 # Import the code for the dialog
 from .GarminCustomMap_dialog import GarminCustomMapDialog
 import os.path
-from PyQt5.QtWidgets import QAction, QFileDialog, QDialog, QMessageBox, QProgressBar
+from PyQt5.QtWidgets import QAction, QFileDialog, QDialog, QMessageBox, QProgressBar, QPushButton
 
 def dbgMsg (message):
     QgsMessageLog.logMessage(message, "GarminCustomMap", level=Qgis.Info)
@@ -593,8 +592,8 @@ class GarminCustomMap:
                             jpg_driver.Register()
                             temp_tile_file = os.path.join(out_folder, tile_name)
                             # Let's add a COMMENT, just for fun
-                            options.append(f'COMMENT="Tile ({r}, {c}) of ({n_rows}, {n_cols}). Produced by GarminCustomMap"')
-                            jpg_driver.CreateCopy(temp_tile_file, tile, options=options)
+                            tile_options = options + [f'COMMENT="Tile ({r}, {c}) of ({n_rows}, {n_cols}). Produced by GarminCustomMap"']
+                            jpg_driver.CreateCopy(temp_tile_file, tile, options=tile_options)
 
                             # Close GDAL datasets
                             tile = None

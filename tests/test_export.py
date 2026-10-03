@@ -7,6 +7,7 @@ import importlib.util
 import os
 import sys
 import tempfile
+import time
 import unittest
 import zipfile
 import xml.etree.ElementTree as ET
@@ -19,7 +20,7 @@ QGIS_APP = start_app()
 from qgis.core import (QgsCoordinateReferenceSystem, QgsFeature, QgsFillSymbol,
                        QgsGeometry, QgsProject, QgsRectangle, QgsVectorLayer)
 from qgis.gui import QgsMapCanvas, QgsMessageBar
-from qgis.PyQt.QtCore import QSize
+from qgis.PyQt.QtCore import QCoreApplication, QSize
 from qgis.PyQt.QtWidgets import QDialog, QMainWindow
 from osgeo import gdal
 
@@ -37,6 +38,16 @@ def load_plugin():
         sys.modules['GarminCustomMap'] = package
         spec.loader.exec_module(package)
     return importlib.import_module('GarminCustomMap.GarminCustomMap')
+
+
+def wait_for_export(plugin, timeout=60):
+    """Newer versions export in the background: wait until that finished"""
+    deadline = time.time() + timeout
+    while getattr(plugin, 'exporter', None) is not None:
+        if time.time() > deadline:
+            raise TimeoutError('the export did not finish')
+        QCoreApplication.processEvents()
+        time.sleep(0.01)
 
 
 class FakeIface:
@@ -136,12 +147,18 @@ class ExportTest(unittest.TestCase):
             return 1
 
         # Older versions used the global iface from qgis.utils
+        self.plugin = plugin
         with mock.patch.object(module, 'iface', iface, create=True), \
                 mock.patch.object(module, 'QgsEncodingFileDialog', return_value=file_dialog), \
                 mock.patch.object(module.GarminCustomMapDialog, 'exec', accept), \
                 mock.patch.object(module.GarminCustomMapDialog, 'show'):
             plugin.run()
+            if options.get('cancel'):
+                plugin.exporter.cancel()
+            wait_for_export(plugin)
         plugin.unload()
+        if options.get('cancel'):
+            return None
         self.assertTrue(os.path.exists(self.kmz_file), 'no kmz was written')
         return zipfile.ZipFile(self.kmz_file)
 
@@ -224,6 +241,46 @@ class ExportTest(unittest.TestCase):
         for o in overlays:
             bands = self.read_tile(kmz, o['href'])
             self.assertLessEqual(bands[0].size, 1024 * 1024)
+
+    def test_full_colour(self):
+        canvas = self.make_canvas('EPSG:4326', (10, 59, 12, 60.5),
+                                  'POLYGON((10 59, 12 59, 12 60.5, 10 60.5, 10 59))')
+        for layer in QgsProject.instance().mapLayers().values():
+            layer.renderer().setSymbol(QgsFillSymbol.createSimple(
+                {'color': '7,135,250', 'outline_style': 'no'}))
+        kmz = self.export(canvas)
+        _, overlays = self.overlays(kmz)
+        bands = self.read_tile(kmz, overlays[0]['href'])
+        # 5 bits per channel would give (0, 132, 255)
+        for band, expected in zip(bands, (7, 135, 250)):
+            self.assertAlmostEqual(int(band[100, 100]), expected, delta=2)
+
+    def test_large_map_rendered_in_strips(self):
+        # A diagonal edge shows whether the strips line up
+        wkt = 'POLYGON((10 59, 12 59, 10 60.5, 10 59))'
+        canvas = self.make_canvas('EPSG:4326', (10, 59, 12, 60.5), wkt)
+        whole = self.export(canvas, zoom=2.0, skip_empty=False)
+        whole_tiles = {o['href']: self.read_tile(whole, o['href']) for o in self.overlays(whole)[1]}
+        module = load_plugin()
+        os.remove(self.kmz_file)
+        # 800 pixels wide, 37 rows per strip
+        with mock.patch.object(module, 'MAX_STRIP_PIXELS', 800 * 37):
+            canvas = self.make_canvas('EPSG:4326', (10, 59, 12, 60.5), wkt)
+            strips = self.export(canvas, zoom=2.0, skip_empty=False)
+        _, overlays = self.overlays(strips)
+        self.assertEqual(sorted(o['href'] for o in overlays), sorted(whole_tiles))
+        for o in overlays:
+            for a, b in zip(self.read_tile(strips, o['href']), whole_tiles[o['href']]):
+                self.assertLess(abs(a.astype(int) - b).mean(), 1, o['href'])
+
+    def test_cancel_keeps_existing_file(self):
+        with open(self.kmz_file, 'w') as f:
+            f.write('old map')
+        canvas = self.make_canvas('EPSG:4326', (10, 59, 12, 60.5),
+                                  'POLYGON((10 59, 12 59, 12 60.5, 10 60.5, 10 59))')
+        self.export(canvas, zoom=2.0, cancel=True)
+        with open(self.kmz_file) as f:
+            self.assertEqual(f.read(), 'old map')
 
     def tile_warnings(self):
         return [m for m in self.messages if 'exceeds the Garmin limit' in str(m)]

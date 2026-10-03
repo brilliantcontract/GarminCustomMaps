@@ -71,8 +71,10 @@ default: compile
 
 compile: $(COMPILED_RESOURCE_FILES)
 
+# Keep the Qt import on qgis.PyQt so the compiled resources work with Qt5 and Qt6
 %.py : %.qrc $(RESOURCES_SRC)
-	pyrcc4 -o $*.py  $<
+	pyrcc5 -o $*.py  $<
+	sed -i 's/^from PyQt5 import QtCore$$/from qgis.PyQt import QtCore/' $*.py
 
 %.qm : %.ts
 	$(LRELEASE) $<

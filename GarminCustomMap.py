@@ -30,18 +30,14 @@ from qgis.PyQt.QtWidgets import QPushButton
 
 from osgeo import gdal
 from osgeo import gdalconst
-from osgeo import osr
 
-import sys
-import itertools
 import os
-import subprocess
+import shutil
 import zipfile
-import zlib
 import tempfile
+from xml.sax.saxutils import escape
 
 from math import *
-import time
 # Load optimization functions
 from .optimization import optimize_fac
 
@@ -76,7 +72,7 @@ class GarminCustomMap:
         # initialize plugin directory
         self.plugin_dir = os.path.dirname(__file__)
         # initialize locale
-        locale = QSettings().value('locale/userLocale')[0:2]
+        locale = (QSettings().value('locale/userLocale') or '')[0:2]
         locale_path = os.path.join(
             self.plugin_dir,
             'i18n',
@@ -85,12 +81,7 @@ class GarminCustomMap:
         if os.path.exists(locale_path):
             self.translator = QTranslator()
             self.translator.load(locale_path)
-
-            if qVersion() > '4.3.3':
-                QCoreApplication.installTranslator(self.translator)
-
-        # Create the dialog (after translation) and keep reference
-        self.dlg = GarminCustomMapDialog()
+            QCoreApplication.installTranslator(self.translator)
 
         # Declare instance attributes
         self.actions = []
@@ -204,32 +195,10 @@ class GarminCustomMap:
                 self.tr(u'&GarminCustomMap'),
                 action)
             self.iface.removeToolBarIcon(action)
-        # remove the toolbar
+        # remove the toolbar, so reloading the plugin does not leave an empty one behind
+        self.iface.mainWindow().removeToolBar(self.toolbar)
+        self.toolbar.deleteLater()
         del self.toolbar
-
-    def cleanUp(self):
-        # TODO: Is this method every actually called?
-        # Reset mapSettings
-        mapSettings.setOutputSize(QSize(old_width, old_height), old_dpi)
-        dbgMsg("\n****\nThe cleanUp method was called.\n****")
-
-        if os.path.exists(out_put + ".png") :
-            os.remove(out_put + ".png")
-
-        if os.path.exists(out_put + ".png.aux.xml") :
-            os.remove(out_put + ".png.aux.xml")
-
-        if os.path.exists(output_geofile) :
-            os.remove(output_geofile)
-
-        if os.path.exists(os.path.join(out_folder, 'doc.kml')) :
-            os.remove(os.path.join(out_folder, 'doc.kml'))
-
-        if os.path.exists(os.path.join(out_folder, tile_name)) :
-            os.remove(os.path.join(out_folder, tile_name))
-
-        if os.path.exists(out_folder) :
-            os.rmdir(out_folder)
 
     def run(self):
         """Run method that performs all the real work"""
@@ -253,10 +222,9 @@ class GarminCustomMap:
             mapRect = canvas.extent()
             srs = mapSettings.destinationCrs()
             SourceCRS = str(srs.authid())
-            # Save settings for resetting the mapRenderer after GCM production
+            # Size of the current map canvas
             old_width = mapSettings.outputSize().width()
             old_height = mapSettings.outputSize().height()
-            old_dpi = mapSettings.outputDpi()
             # Reduce clutter of making mapSettings calls and just use the existing variables
             width = round(old_width)
             height = round(old_height)
@@ -294,7 +262,7 @@ class GarminCustomMap:
                 iface.messageBar().pushWidget(widget, Qgis.MessageLevel.Critical, duration=10)
 
             # create the dialog
-            dlg = GarminCustomMapDialog()
+            dlg = GarminCustomMapDialog(self.iface.mainWindow())
 
             # Update the dialog
             dlg.textBrowser.setHtml(
@@ -335,8 +303,8 @@ class GarminCustomMap:
             <p>
             For more information on size limits and technical details regarding the
             Garmin Custom Maps format see \"About\" tab and/or
-            <a href="https://forums.garmin.com/showthread.php?t=2646">
-            https://forums.garmin.com/showthread.php?t=2646</a>
+            <a href="https://support.garmin.com/en-US/?faq=UcO3cFueS12IwCnizrJjeA">
+            Garmin Support: Custom Maps</a>
             </p></span> """.format(
             height=height, width=width, scale=round(scale), expected_tile_n_unzoomed=expected_tile_n_unzoomed,
             cap100=expected_tile_n_unzoomed/100, max_zoom_100=max_zoom_100, scale_zoom_100=scale_zoom_100,
@@ -371,309 +339,243 @@ class GarminCustomMap:
                 options.append("QUALITY=" + str(qual))
                 draworder = dlg.draworder.value()
                 zoom = float(dlg.zoom.value())
-                in_file = os.path.splitext(os.path.basename(kmz_file))[0]
                 max_pix = (1024 * 1024)
-                # Create tmp-folder
+                # Create tmp-folder; it is removed again even if the export fails
                 out_folder = tempfile.mkdtemp('_tmp', 'gcm_')
                 if dbg: dbgMsg(f'Temporary output folder: {out_folder}')
-                out_put = os.path.join(out_folder, in_file)
-                input_file = out_put + u'.png'
+                try:
+                    self.export(kmz_file, out_folder, mapSettings, mapRect, srs, zoom, optimize,
+                                skip_empty, tile_width, tile_height, max_pix, max_num_tiles,
+                                options, draworder, dbg)
+                finally:
+                    shutil.rmtree(out_folder, ignore_errors=True)
+                    # Clear progressbar and statusbar
+                    iface.messageBar().clearWidgets()
+                    iface.statusBarIface().clearMessage()
 
-                # Set QGIS objects
-                target_dpi = round(zoom * mapSettings.outputDpi())
-                # Initialise temporary output image
-                x, y = 0, 0
-                width = round(mapSettings.outputSize().width() * zoom)
-                height = round(mapSettings.outputSize().height() * zoom)
-                mapSettings.setOutputSize(QSize(width, height))
-                mapSettings.setExtent(mapRect)
-                mapSettings.setFlags(Qgis.MapSettingsFlags(Qgis.MapSettingsFlag.Antialiasing | Qgis.MapSettingsFlag.UseAdvancedEffects | Qgis.MapSettingsFlag.ForceVectorOutput | Qgis.MapSettingsFlag.DrawLabeling))
+    def export(self, kmz_file, out_folder, mapSettings, mapRect, srs, zoom, optimize,
+               skip_empty, tile_width, tile_height, max_pix, max_num_tiles,
+               options, draworder, dbg):
+        """Render the map canvas and write it as tiles into kmz_file"""
+        SourceCRS = str(srs.authid())
+        in_file = os.path.splitext(os.path.basename(kmz_file))[0]
+        out_put = os.path.join(out_folder, in_file)
+        input_file = out_put + u'.png'
 
-                # create output image and initialize it
-                image = QImage(QSize(width, height), QImage.Format.Format_RGB555)
-                image.fill(qRgb(255, 255, 255))
+        # Initialise temporary output image
+        # The DPI is left unchanged, so zooming renders a larger map scale (issue #22)
+        width = round(mapSettings.outputSize().width() * zoom)
+        height = round(mapSettings.outputSize().height() * zoom)
+        mapSettings.setOutputSize(QSize(width, height))
+        mapSettings.setExtent(mapRect)
+        mapSettings.setFlags(Qgis.MapSettingsFlags(Qgis.MapSettingsFlag.Antialiasing | Qgis.MapSettingsFlag.UseAdvancedEffects | Qgis.MapSettingsFlag.ForceVectorOutput | Qgis.MapSettingsFlag.DrawLabeling))
 
-                # adjust map canvas (renderer) to the image size and render
-                imagePainter = QPainter(image)
-                imagePainter.begin(image)
-                mapRenderer = QgsMapRendererCustomPainterJob(mapSettings, imagePainter)
-                mapRenderer.start()
-                mapRenderer.waitForFinished()
-                imagePainter.end()
+        # create output image and initialize it
+        image = QImage(QSize(width, height), QImage.Format.Format_RGB555)
+        image.fill(qRgb(255, 255, 255))
 
-                # Save the image
-                # This is the full size image of the whole extent
-                # It is temporary because later it gets divided into smaller JPGs according to the Garmin Custom Map constraints
-                # TODO: add try:catch to the save operation in case of weird file issues
-                if dbg: dbgMsg(f'Initial full-extent render file: {input_file}')
-                image.save(input_file, "png")
+        # adjust map canvas (renderer) to the image size and render
+        imagePainter = QPainter(image)
+        mapRenderer = QgsMapRendererCustomPainterJob(mapSettings, imagePainter)
+        mapRenderer.start()
+        mapRenderer.waitForFinished()
+        imagePainter.end()
 
-                # Set Geotransform and NoData values
-                # TODO: add try:catch to make sure gdal was actually able to open the file
-                input_dataset = gdal.Open(input_file)
+        # Save the image
+        # This is the full size image of the whole extent
+        # It is temporary because later it gets divided into smaller JPGs according to the Garmin Custom Map constraints
+        if dbg: dbgMsg(f'Initial full-extent render file: {input_file}')
+        if not image.save(input_file, "png"):
+            raise IOError(f'Could not write temporary image {input_file}')
 
-                # Set Geotransform values
-                ULx, ULy = mapRect.xMinimum(), mapRect.yMaximum()
-                LRx, LRy = mapRect.xMaximum(), mapRect.yMinimum()
-                pixel_width = (LRx - ULx) / width
-                pixel_height = (LRy - ULy) / height
-                input_dataset.SetGeoTransform([ULx, pixel_width, 0, ULy, 0, pixel_height])
+        # Georeference values of the rendered image
+        ULx, ULy = mapRect.xMinimum(), mapRect.yMaximum()
+        LRx, LRy = mapRect.xMaximum(), mapRect.yMinimum()
+        pixel_width = (LRx - ULx) / width
+        pixel_height = (LRy - ULy) / height
 
-                # Print some GDAL info to messages:
+        # Warp the exported image to WGS84 if necessary
+        if SourceCRS != 'EPSG:4326':
+            output_geofile = out_put + "_wgs84.tif"
+            # Georeference the image through a VRT, so nothing has to be written next to the PNG
+            georef = gdal.Translate('', input_file, format='VRT',
+                                    outputBounds=[ULx, ULy, LRx, LRy], outputSRS=srs.toWkt())
+            # Areas outside the map are filled white (issue #32: the warped VRT is read-only)
+            warped = gdal.Warp(output_geofile, georef, format='GTiff',
+                               dstSRS=QgsCoordinateReferenceSystem('EPSG:4326').toWkt(),
+                               warpOptions=['INIT_DEST=255'])
+            if warped is None:
+                raise IOError(f'Could not reproject the map to WGS84 ({gdal.GetLastErrorMsg()})')
+            ULx, pixel_width, _, ULy, _, pixel_height = warped.GetGeoTransform()
+            warped = None
+            georef = None
+            input_file = output_geofile
+
+        # Here the code breaks up the initial full-extent render file
+        # Calculate tile size and number of tiles
+        indataset = gdal.Open(input_file)
+        if indataset is None:
+            raise IOError(f'Could not open {input_file} ({gdal.GetLastErrorMsg()})')
+        x_extent = indataset.RasterXSize
+        y_extent = indataset.RasterYSize
+
+        # Print some GDAL info to messages:
+        if dbg:
+            dbgMsg("*--- GDAL info ---*")
+            dbgMsg("This is the dataset after writing image to file from QGIS and potentially reprojecting.")
+            dbgMsg("Driver: {}/{}".format(indataset.GetDriver().ShortName, indataset.GetDriver().LongName))
+            dbgMsg("Size: {} x {} x {}".format(x_extent, y_extent, indataset.RasterCount))
+            dbgMsg("Geotransform: {}".format([ULx, pixel_width, 0, ULy, 0, pixel_height]))
+            dbgMsg("-------------------")
+
+        if optimize:
+            if dbg: dbgMsg("*--- Optimizing ---*")
+            tile_width, tile_height = optimize_fac (
+                x_extent, y_extent, max_pix, max_num_tiles)
+            if (tile_width, tile_height) == (1, 1):
+                tile_width, tile_height = 1024, 1024
                 if dbg:
-                    dbgMsg("*--- GDAL info ---*")
-                    dbgMsg("This is the *first* instance of the dataset, directly after writing image to file from QGIS")
-                    dbgMsg("Driver: {}/{}".format(input_dataset.GetDriver().ShortName, input_dataset.GetDriver().LongName))
-                    dbgMsg("Size: {} x {} x {}".format(input_dataset.RasterXSize, input_dataset.RasterYSize, input_dataset.RasterCount))
-                    dbgMsg("Projection: {}".format(input_dataset.GetGeoTransform()))
-                    dbgMsg("Geotransform: {}".format(input_dataset.GetGeoTransform()))
+                    dbgMsg("Done, couldn't find a good solution with the following constraints:")
+                    dbgMsg("Max tile size: {} (1024 x 1024), max number of tiles: {}".format(max_pix, max_num_tiles))
+            else:
+                tile_width, tile_height = int (tile_width), int (tile_height)
+                if dbg:
+                    dbgMsg("Done, optimal tile size: {} x {}".format(tile_width, tile_height))
                     dbgMsg("-------------------")
 
-                # Close dataset
-                input_dataset = None
 
-                # Reset mapSettings to old size (monitor)
-                mapSettings.setOutputSize(QSize(old_width, old_height))
+        # Calculate number of rows and columns
+        n_cols = -(-x_extent//tile_width)
+        n_rows = -(-y_extent//tile_height)
+        # Calculate number of tiles
+        n_tiles = (n_rows * n_cols)
+        # Calculate the pixels that don't fit into the full-tile coverage (trailing pixels)
+        x_pix_trailing = x_extent % tile_width
+        y_pix_trailing = y_extent % tile_height
 
-                # Warp the exported image to WGS84 if necessary
-                if SourceCRS != 'EPSG:4326':
-                    # Define input and output file
-                    output_geofile = os.path.join(out_folder, out_put + "wgs84.tif")
-                    # Register tif-driver
-                    driver = gdal.GetDriverByName("GTiff")
-                    driver.Register()
-                    # Define input CRS
-                    in_CRS = srs.toWkt()
-                    # in_CRS = srs.toWkt().encode('UTF-8')
-                    # print type(in_CRS)
-                    # Define output CRS
-                    out_CRS = QgsCoordinateReferenceSystem('EPSG:4326').toWkt()
-                    # print type(out_CRS)
-                    # Open input dataset
-                    input_dataset = gdal.Open(input_file)
+        # Check if number of tiles is below Garmins limit of 100 tiles (across all custom maps)
+        if n_tiles > 100:
+            iface.messageBar().pushMessage("WARNING", "The number of tiles ({}) exceeds the Garmin limit of 100 tiles! Not all tiles will be displayed on your GPS unit. Consider reducing your map size (extent or zoom-factor).".format(n_tiles), level=Qgis.MessageLevel.Warning, duration=5)
 
-                    # Create VRT
-                    reproj_file = gdal.AutoCreateWarpedVRT(input_dataset, in_CRS, out_CRS)
-                    reproj_file.GetRasterBand(1).Fill(255)
-                    reproj_file.GetRasterBand(2).Fill(255)
-                    reproj_file.GetRasterBand(3).Fill(255)
+        # Check if size of tiles is below Garmins limit of 1 megapixel (for each tile)
+        if (tile_width * tile_height) > max_pix:
+            iface.messageBar().pushMessage("WARNING", "The number of pixels in a tile exceeds Garmins limit of 1 megapixel per tile! Images will not be displayed properly.", level=Qgis.MessageLevel.Warning, duration=5)
 
-                    # Reproject
-                    gdal.ReprojectImage(input_dataset, reproj_file, in_CRS, out_CRS)
-                    reproj_attributes = reproj_file.GetGeoTransform()
+        progressMessageBar = iface.messageBar().createMessage(f'Producing total of {n_tiles} tiles...')
+        progress = QProgressBar()
+        progress.setMaximum(n_tiles)
+        progress.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        progressMessageBar.layout().addWidget(progress)
+        iface.messageBar().pushWidget(progressMessageBar, Qgis.MessageLevel.Info)
 
-                    # Update relevant georef variables
-                    ULx = reproj_attributes[0]
-                    ULy = reproj_attributes[3]
-                    pixel_width = reproj_attributes[1]
-                    pixel_height = reproj_attributes[5]
+        mem_driver = gdal.GetDriverByName("MEM")
+        jpg_driver = gdal.GetDriverByName("JPEG")
+        kml_name = escape(in_file)
 
-                    driver = gdal.GetDriverByName("GTiff")
-                    warped_input = driver.CreateCopy(output_geofile, reproj_file, 0)
+        # Open kmz and kml for writing
+        with zipfile.ZipFile(kmz_file, 'w') as kmz, \
+                open(os.path.join(out_folder, 'doc.kml'), 'w', encoding='utf-8') as kml:
 
-                    input_dataset = None
-                    reproj_file = None
-                    warped_input = None
-                    input_file = output_geofile
+            # Write kml header
+            kml.write('<?xml version="1.0" encoding="UTF-8"?>\n')
+            kml.write('<kml xmlns="http://www.opengis.net/kml/2.2">\n')
+            kml.write('  <Document>\n')
+            kml.write('    <name> {} </name>\n'.format(kml_name))
 
-                # Here the code breaks up the initial full-extent render file
-                # Calculate tile size and number of tiles
-                # Add try:catch to make sure we are opening the file properly
-                indataset = gdal.Open(input_file)
-                x_extent = indataset.RasterXSize
-                y_extent = indataset.RasterYSize
+            # Produce .jpg tiles looping through the complete rows and columns
+            y_offset = 0
+            empty_tiles = 0
+            done_tiles = 0
+            # Loop through rows
+            for r in range(1, n_rows + 1):
+                # If this is the last row, set tile height to trailing pixels
+                row_height = y_pix_trailing if r == n_rows and y_pix_trailing > 0 else tile_height
+                x_offset = 0
 
-                # Print some GDAL info to messages:
-                if dbg:
-                    dbgMsg("*--- GDAL info ---*")
-                    dbgMsg("This is the *Second* instance of the dataset, after writing image to file from QGIS and potentially reprojecting.")
-                    dbgMsg("Driver: {}/{}".format(indataset.GetDriver().ShortName, indataset.GetDriver().LongName))
-                    dbgMsg("Size: {} x {} x {}".format(x_extent, y_extent, indataset.RasterCount))
-                    dbgMsg("Projection: {}".format(indataset.GetGeoTransform()))
-                    dbgMsg("Geotransform: {}".format(indataset.GetGeoTransform()))
-                    dbgMsg("-------------------")
+                # (Within row-loop) Loop through columns
+                for c in range(1, n_cols + 1):
+                    # If this is the last column, set tile width to trailing pixels
+                    col_width = x_pix_trailing if c == n_cols and x_pix_trailing > 0 else tile_width
 
-                if optimize:
-                    if dbg: dbgMsg("*--- Optimizing ---*")
-                    tile_width, tile_height = optimize_fac (
-                        x_extent, y_extent, max_pix, max_num_tiles)
-                    if (tile_width, tile_height) == (1, 1):
-                        tile_width, tile_height = 1024, 1024
-                        if dbg:
-                            dbgMsg("Done, couldn't find a good solution with the following constraints:")
-                            dbgMsg("Max tile size: {} (1024 x 1024), max number of tiles: {}".format(max_pix, max_num_tiles))
+                    # Define name for tile jpg
+                    tile_name = f'{in_file}_{r}_{c}.jpg'
+
+                    # Read a tile size portion of the indataset full extent image
+                    t_bands = [indataset.GetRasterBand(b).ReadAsArray(x_offset, y_offset, col_width, row_height)
+                               for b in (1, 2, 3)]
+
+                    if skip_empty and all(band.min() == 255 for band in t_bands):
+                        # Entirely white tile: leave it out of the kmz to save Garmin's tile budget
+                        empty_tiles += 1
+                        if dbg: dbgMsg(f'Skipping empty tile: {tile_name}')
                     else:
-                        tile_width, tile_height = int (tile_width), int (tile_height)
-                        if dbg:
-                            dbgMsg("Done, optimal tile size: {} x {}".format(tile_width, tile_height))
-                            dbgMsg("-------------------")
+                        if dbg: dbgMsg(f'Producing tile: {tile_name}')
+                        # JPEG-driver has no Create() so we will create an in-memory dataset and then CreateCopy()
+                        tile = mem_driver.Create('', col_width, row_height, 3, gdalconst.GDT_Byte)
+                        for b, band in enumerate(t_bands, start=1):
+                            tile.GetRasterBand(b).WriteArray(band)
 
+                        # Translate MEM dataset to JPG
+                        temp_tile_file = os.path.join(out_folder, tile_name)
+                        # Let's add a COMMENT, just for fun
+                        tile_options = options + [f'COMMENT="Tile ({r}, {c}) of ({n_rows}, {n_cols}). Produced by GarminCustomMap"']
+                        jpg_driver.CreateCopy(temp_tile_file, tile, options=tile_options)
+                        tile = None
 
-                # Calculate number of rows and columns
-                n_cols = -(-x_extent//tile_width)
-                n_rows = -(-y_extent//tile_height)
-                # Calculate number of tiles
-                n_tiles = (n_rows * n_cols)
-                # Calculate the pixels that don't fit into the full-tile coverage (trailing pixels)
-                x_pix_trailing = x_extent % tile_width
-                y_pix_trailing = y_extent % tile_height
+                        # Add .jpg to .kmz-file and remove it afterwards
+                        kmz.write(temp_tile_file, tile_name)
+                        os.remove(temp_tile_file)
+                        if os.path.exists(temp_tile_file + '.aux.xml'):
+                            os.remove(temp_tile_file + '.aux.xml')
 
-                # Check if number of tiles is below Garmins limit of 100 tiles (across all custom maps)
-                if n_tiles > 100:
-                    iface.messageBar().pushMessage("WARNING", "The number of tiles ({}) exceeds the Garmin limit of 100 tiles! Not all tiles will be displayed on your GPS unit. Consider reducing your map size (extent or zoom-factor).".format(n_tiles), level=Qgis.MessageLevel.Warning, duration=5)
+                        # Next we have to populate the KML with metadata
+                        # Calculate tile extent
+                        N = ULy + (y_offset * pixel_height)
+                        S = ULy + ((y_offset + row_height) * pixel_height)
+                        E = ULx + ((x_offset + col_width) * pixel_width)
+                        W = ULx + (x_offset * pixel_width)
+                        if dbg: dbgMsg(f'Calculated tile extent: N:{N}, S:{S}, E:{E}, W:{W}')
 
-                # Check if size of tiles is below Garmins limit of 1 megapixel (for each tile)
-                if (tile_width * tile_height) > max_pix:
-                    iface.messageBar().pushMessage("WARNING", "The number of pixels in a tile exceeds Garmins limit of 1 megapixel per tile! Images will not be displayed properly.", level=Qgis.MessageLevel.Warning, duration=5)
+                        # Write kml-tags for each tile (Name, DrawOrder, JPEG-Reference, GroundOverlay)
+                        kml.write('    <GroundOverlay>\n')
+                        kml.write('        <name>' + kml_name + ' Tile ' + str(r) + '_' + str(c) + '</name>\n')
+                        kml.write('        <drawOrder>' + str(draworder) + '</drawOrder>\n')
+                        kml.write('        <Icon>\n')
+                        kml.write('          <href>' + escape(tile_name) + '</href>\n')
+                        kml.write('        </Icon>\n')
+                        kml.write('        <LatLonBox>\n')
+                        kml.write('          <north>' + str(N) + '</north>\n')
+                        kml.write('          <south>' + str(S) + '</south>\n')
+                        kml.write('          <east>' + str(E) + '</east>\n')
+                        kml.write('          <west>' + str(W) + '</west>\n')
+                        kml.write('        </LatLonBox>\n')
+                        kml.write('    </GroundOverlay>\n')
 
-                progressMessageBar = iface.messageBar().createMessage(f'Producing total of {n_tiles} tiles...')
-                progress = QProgressBar()
-                progress.setMaximum(n_tiles)
-                progress.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-                progressMessageBar.layout().addWidget(progress)
-                iface.messageBar().pushWidget(progressMessageBar, Qgis.MessageLevel.Info)
+                    t_bands = None
+                    # Calculate new X-offset
+                    x_offset = (x_offset + col_width)
+                    done_tiles = (done_tiles + 1)
+                    # Update progress bar
+                    progress.setValue(done_tiles)
+                    # Output message in status bar, too
+                    iface.statusBarIface().showMessage(f'Produced tile: {done_tiles}')
+                # Calculate new Y-offset
+                y_offset = (y_offset + row_height)
 
-                # Open kmz and kml for writing
-                # TODO: Add try:catch to make sure we have permission to write to files
-                kmz = zipfile.ZipFile(kmz_file, 'w')
-                with open(os.path.join(out_folder, 'doc.kml'), 'w') as kml:
+            # Write kml footer
+            kml.write('  </Document>\n')
+            kml.write('</kml>\n')
+            kml.close()
 
-                    # Write kml header
-                    kml.write('<?xml version="1.0" encoding="UTF-8"?>\n')
-                    kml.write('<kml xmlns="http://www.opengis.net/kml/2.2">\n')
-                    kml.write('  <Document>\n')
-                    kml.write('    <name> {} </name>\n'.format(in_file.encode('UTF-8').decode('utf-8')))
+            # Close GDAL dataset
+            indataset = None
 
-                    # Produce .jpg tiles using gdal_translate looping through the complete rows and columns (1024x1024 pixel)
-                    y_offset = 0
-                    x_offset = 0
-                    empty_tiles = 0
-                    tile_width_reset_value = tile_width
-                    # We reset this to 0 because it's used as the progress indicator in the progress bar
-                    n_tiles = 0
-                    # Loop through rows
-                    for r in range(1, n_rows + 1):
-                        # If this is the last row, set tile height to trailing pixels
-                        if r == n_rows and y_pix_trailing > 0:
-                            tile_height = y_pix_trailing
+            # Add .kml to .kmz-file
+            kmz.write(os.path.join(out_folder, u'doc.kml'), u'doc.kml')
 
-                        # (Within row-loop) Loop through columns
-                        for c in range(1, n_cols + 1):
-                            # If this is the last column, set tile width to trailing pixels
-                            if c == n_cols and x_pix_trailing > 0:
-                                tile_width = x_pix_trailing
-
-                            # Define name for tile jpg
-                            tile_name = f'{in_file}_{r}_{c}.jpg'
-                            if dbg: dbgMsg(f'Producing tile: {tile_name}')
-                            
-                            # Set parameters for "gdal_translate"
-                            # JPEG-driver has no Create() so we will create an in-memory dataset and then CreateCopy()
-                            mem_driver = gdal.GetDriverByName("MEM")
-                            mem_driver.Register()
-                            tile = mem_driver.Create('', tile_width, tile_height, 3, gdalconst.GDT_Byte)
-
-                            # Read a tile size portion of the indataset full extent image
-                            t_band_1 = indataset.GetRasterBand(1).ReadAsArray(x_offset, y_offset, tile_width, tile_height)
-                            t_band_2 = indataset.GetRasterBand(2).ReadAsArray(x_offset, y_offset, tile_width, tile_height)
-                            t_band_3 = indataset.GetRasterBand(3).ReadAsArray(x_offset, y_offset, tile_width, tile_height)
-
-                            # TODO: it doesn't seem like we actually skip anything if this is true.
-                            if skip_empty:
-                                if t_band_1.min() == 255 and t_band_2.min() == 255 and t_band_3.min() == 255 :
-                                    empty_tiles = empty_tiles + 1
-
-                            # Write the tile size portion of the indataset to the tile jpg and close bands
-                            tile.GetRasterBand(1).WriteArray(t_band_1)
-                            tile.GetRasterBand(2).WriteArray(t_band_2)
-                            tile.GetRasterBand(3).WriteArray(t_band_3)
-                            # Close datasets
-                            t_band_1 = None
-                            t_band_2 = None
-                            t_band_3 = None
-
-                            # Translate MEM dataset to JPG
-                            jpg_driver = gdal.GetDriverByName("JPEG")
-                            jpg_driver.Register()
-                            temp_tile_file = os.path.join(out_folder, tile_name)
-                            # Let's add a COMMENT, just for fun
-                            tile_options = options + [f'COMMENT="Tile ({r}, {c}) of ({n_rows}, {n_cols}). Produced by GarminCustomMap"']
-                            jpg_driver.CreateCopy(temp_tile_file, tile, options=tile_options)
-
-                            # Close GDAL datasets
-                            tile = None
-
-                            # Add .jpg to .kmz-file and remove it together with its meta-data afterwards
-                            kmz.write(temp_tile_file, tile_name)
-                            os.remove(temp_tile_file)
-
-                            # Next we have to populate the KML with metadata
-                            # Calculate tile extent
-                            N = ULy + (y_offset * pixel_height)
-                            S = ULy + ((y_offset + tile_height) * pixel_height)
-                            E = ULx + ((x_offset + tile_width) * pixel_width)
-                            W = ULx + (x_offset * pixel_width)
-                            if dbg: dbgMsg(f'Calculated tile extent: N:{N}, S:{S}, E:{E}, W:{W}')
-
-                            # Write kml-tags for each tile (Name, DrawOrder, JPEG-Reference, GroundOverlay)
-                            kml.write('')
-                            kml.write('    <GroundOverlay>\n')
-                            kml.write('        <name>' + in_file.encode('UTF-8').decode('utf-8') + ' Tile ' + str(r) + '_' + str(c) + '</name>\n')  # %{"r":r, "c":c}
-                            kml.write('        <drawOrder>' + str(draworder) + '</drawOrder>\n')  # %{"draworder":draworder}
-                            kml.write('        <Icon>\n')
-                            kml.write('          <href>' + in_file.encode('UTF-8').decode('utf-8') + '_' + str(r) + '_' + str(c) + '.jpg</href>\n')  # %{"r":r, "c":c}
-                            kml.write('        </Icon>\n')
-                            kml.write('        <LatLonBox>\n')
-                            kml.write('          <north>' + str(N) + '</north>\n')
-                            kml.write('          <south>' + str(S) + '</south>\n')
-                            kml.write('          <east>' + str(E) + '</east>\n')
-                            kml.write('          <west>' + str(W) + '</west>\n')
-                            kml.write('        </LatLonBox>\n')
-                            kml.write('    </GroundOverlay>\n')
-
-                            # Calculate new X-offset
-                            x_offset = (x_offset + tile_width)
-                            n_tiles = (n_tiles + 1)
-                            # Update progress bar
-                            progress.setValue(n_tiles)
-                            # Pause between cycles if debugging to get a sense of what's happening
-                            if dbg: time.sleep (0.25)
-                            # Output message in status bar, too
-                            iface.statusBarIface().showMessage(f'Produced tile: {n_tiles}')
-                        # Calculate new Y-offset
-                        y_offset = (y_offset + tile_height)
-                        # Reset X-offset
-                        x_offset = 0
-                        # Reset tile width
-                        tile_width = tile_width_reset_value
-
-                    # Write kml footer
-                    kml.write('  </Document>\n')
-                    kml.write('</kml>\n')
-                    # Exiting this indentaton block exits the kml context and closes the file
-
-                # Close GDAL dataset
-                indataset = None
-
-                # Remove temporary geo-tif file
-                os.remove(out_put + u'.png')
-                os.remove(out_put + u'.png.aux.xml')
-
-                # Remove reprojected temporary geo-tif file if necessary
-                if SourceCRS != 'EPSG:4326':
-                    os.remove(output_geofile)
-
-                # Add .kml to .kmz-file and remove it together with the rest of the temporary files
-                kmz.write(os.path.join(out_folder, u'doc.kml'), u'doc.kml')
-                os.remove(os.path.join(out_folder, u'doc.kml'))
-                kmz.close()
-                os.rmdir(out_folder)
-                # Clear progressbar
-                iface.messageBar().clearWidgets()
-                # Clear statusbar
-                iface.statusBarIface().clearMessage()
-                # Give success message
-                tiles_total = n_tiles - empty_tiles
-                iface.messageBar().pushMessage('Done',
-                        f'Produced {tiles_total} tiles, with {n_rows} rows and {n_cols} columns.',
-                        level=Qgis.MessageLevel.Success, duration=5)
+        # Give success message
+        tiles_total = done_tiles - empty_tiles
+        skipped = f' {empty_tiles} empty tiles were skipped.' if empty_tiles else ''
+        iface.messageBar().pushMessage('Done',
+                f'Produced {tiles_total} tiles, with {n_rows} rows and {n_cols} columns.{skipped}',
+                level=Qgis.MessageLevel.Success, duration=5)

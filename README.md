@@ -7,7 +7,9 @@ Each jpg-file is limited to 1 megapixel (e.g. 1024 x 1024 pixel or 2048 x 512 pi
 
 With the "Opimize tile size automatically"-flag checked (default), the tile size will be adjusted to the short side of the map in order to produce the minimum number of tiles for the map area.
 
-The number of Custom Map jpgs (Tiles in your .kmz-file) on a GPS unit is usually limited to max. 100 jpgs (across all Custom Maps on the unit). However, newer Garmin GPS units (Montana, Oregon 6x0, and GPSMAP 64) have a limit of 500 tiles on the device in total.
+The zoom factor scales the map image relative to the map canvas: values above 1 give a more detailed map with more tiles, values below 1 (down to 0.1) a coarser map with fewer tiles.
+
+The number of Custom Map jpgs (Tiles in your .kmz-file) on a GPS unit is usually limited to max. 100 jpgs (across all Custom Maps on the unit). However, newer Garmin GPS units (Montana, Oregon 6x0, and GPSMAP 64) have a limit of 500 tiles on the device in total. Choose the limit of your unit under "Tile limit of your GPS unit"; automatic tile sizes and the tile count warning use it.
 
 When "Skip production of empty tiles" is checked (default), tiles which are entirely white (white is the default background color) are not produced in order to minimize the consumption of the limited space on the GPS device.
 

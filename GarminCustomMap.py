@@ -327,8 +327,8 @@ class GarminCustomMap:
                 skip_empty = dlg.flag_skip_empty.isChecked()
                 tile_height = int(dlg.tile_height.value())
                 tile_width = int(dlg.tile_width.value())
-                # TODO: add a field to specify max number of tiles
-                max_num_tiles = 100
+                # Garmin units show 100 or (newer ones) 500 tiles across all Custom Maps
+                max_num_tiles = (100, 500)[dlg.tile_limit.currentIndex()]
                 qual = int(dlg.jpg_quality.value())
                 dbg = dlg.flag_dbgMsg.isChecked()
                 # Set options for jpg-production
@@ -453,10 +453,6 @@ class GarminCustomMap:
         x_pix_trailing = x_extent % tile_width
         y_pix_trailing = y_extent % tile_height
 
-        # Check if number of tiles is below Garmins limit of 100 tiles (across all custom maps)
-        if n_tiles > 100:
-            iface.messageBar().pushMessage("WARNING", "The number of tiles ({}) exceeds the Garmin limit of 100 tiles! Not all tiles will be displayed on your GPS unit. Consider reducing your map size (extent or zoom-factor).".format(n_tiles), level=Qgis.MessageLevel.Warning, duration=5)
-
         # Check if size of tiles is below Garmins limit of 1 megapixel (for each tile)
         if (tile_width * tile_height) > max_pix:
             iface.messageBar().pushMessage("WARNING", "The number of pixels in a tile exceeds Garmins limit of 1 megapixel per tile! Images will not be displayed properly.", level=Qgis.MessageLevel.Warning, duration=5)
@@ -579,3 +575,7 @@ class GarminCustomMap:
         iface.messageBar().pushMessage('Done',
                 f'Produced {tiles_total} tiles, with {n_rows} rows and {n_cols} columns.{skipped}',
                 level=Qgis.MessageLevel.Success, duration=5)
+
+        # Check if number of tiles is below Garmins limit (across all custom maps)
+        if tiles_total > max_num_tiles:
+            iface.messageBar().pushMessage("WARNING", "The number of tiles ({}) exceeds the Garmin limit of {} tiles! Not all tiles will be displayed on your GPS unit. Consider reducing your map size (extent or zoom-factor).".format(tiles_total, max_num_tiles), level=Qgis.MessageLevel.Warning, duration=10)

@@ -25,7 +25,6 @@ from qgis.PyQt.QtGui import *
 
 from qgis.core import *
 from qgis.gui import *
-from qgis.utils import *
 from qgis.PyQt.QtWidgets import QPushButton
 
 from osgeo import gdal
@@ -200,11 +199,33 @@ class GarminCustomMap:
         self.toolbar.deleteLater()
         del self.toolbar
 
+    # Dialog widgets whose values are remembered between runs, with their type
+    SETTINGS = (('tile_height', int), ('tile_width', int), ('jpg_quality', int),
+                ('zoom', float), ('draworder', int), ('flag_optimize', bool),
+                ('flag_skip_empty', bool), ('flag_dbgMsg', bool))
+
+    def restore_settings(self, dlg, settings):
+        """Fill the dialog with the values used last time"""
+        for name, value_type in self.SETTINGS:
+            widget = getattr(dlg, name)
+            key = 'GarminCustomMap/' + name
+            if value_type is bool:
+                widget.setChecked(settings.value(key, widget.isChecked(), type=bool))
+            else:
+                widget.setValue(settings.value(key, widget.value(), type=value_type))
+
+    def save_settings(self, dlg, settings):
+        """Remember the dialog values for the next run"""
+        for name, value_type in self.SETTINGS:
+            widget = getattr(dlg, name)
+            value = widget.isChecked() if value_type is bool else widget.value()
+            settings.setValue('GarminCustomMap/' + name, value)
+
     def run(self):
         """Run method that performs all the real work"""
         # prepare dialog parameters
-        settings = QSettings()
-        lastDir = settings.value("/UI/lastProjectDir")
+        settings = QgsSettings()
+        lastDir = settings.value("GarminCustomMap/lastDir", settings.value("/UI/lastProjectDir"))
         fileFilter = "GarminCustomMap files (*.kmz)"
         # TODO: Getting the file location should be asynchronous and settable in a file field in the UI
         # TODO: This and the actual processing section should be separated out from the run in another refactor, right now the UI is blocked while we wait for processing
@@ -215,6 +236,7 @@ class GarminCustomMap:
         # out_putFile.setConfirmOverwrite(True)
         if out_putFile.exec() == QDialog.DialogCode.Accepted:
             kmz_file = out_putFile.selectedFiles()[0]
+            settings.setValue("GarminCustomMap/lastDir", os.path.dirname(kmz_file))
             # Get mapCanvas and mapRenderer variables
             canvas = self.iface.mapCanvas()
             scale = canvas.scale()
@@ -254,15 +276,16 @@ class GarminCustomMap:
                     "the number of tiles etc. in the \"Setting hints\"-Tab will be incorrect!")
                     proj_msg.exec()
 
-                widget = iface.messageBar().createMessage("WARNING", "Project CRS differs from WGS84 (EPSG: 4326)")
+                widget = self.iface.messageBar().createMessage("WARNING", "Project CRS differs from WGS84 (EPSG: 4326)")
                 button = QPushButton(widget)
                 button.setText("Info")
                 button.pressed.connect(projWarning)
                 widget.layout().addWidget(button)
-                iface.messageBar().pushWidget(widget, Qgis.MessageLevel.Critical, duration=10)
+                self.iface.messageBar().pushWidget(widget, Qgis.MessageLevel.Critical, duration=10)
 
             # create the dialog
             dlg = GarminCustomMapDialog(self.iface.mainWindow())
+            self.restore_settings(dlg, settings)
 
             # Update the dialog
             dlg.textBrowser.setHtml(
@@ -322,6 +345,7 @@ class GarminCustomMap:
             result = dlg.exec()
             # See if OK was pressed
             if result == 1:
+                self.save_settings(dlg, settings)
                 # Set variables
                 optimize = dlg.flag_optimize.isChecked()
                 skip_empty = dlg.flag_skip_empty.isChecked()
@@ -350,8 +374,8 @@ class GarminCustomMap:
                 finally:
                     shutil.rmtree(out_folder, ignore_errors=True)
                     # Clear progressbar and statusbar
-                    iface.messageBar().clearWidgets()
-                    iface.statusBarIface().clearMessage()
+                    self.iface.messageBar().clearWidgets()
+                    self.iface.statusBarIface().clearMessage()
 
     def export(self, kmz_file, out_folder, mapSettings, mapRect, srs, zoom, optimize,
                skip_empty, tile_width, tile_height, max_pix, max_num_tiles,
@@ -455,18 +479,18 @@ class GarminCustomMap:
 
         # Check if number of tiles is below Garmins limit of 100 tiles (across all custom maps)
         if n_tiles > 100:
-            iface.messageBar().pushMessage("WARNING", "The number of tiles ({}) exceeds the Garmin limit of 100 tiles! Not all tiles will be displayed on your GPS unit. Consider reducing your map size (extent or zoom-factor).".format(n_tiles), level=Qgis.MessageLevel.Warning, duration=5)
+            self.iface.messageBar().pushMessage("WARNING", "The number of tiles ({}) exceeds the Garmin limit of 100 tiles! Not all tiles will be displayed on your GPS unit. Consider reducing your map size (extent or zoom-factor).".format(n_tiles), level=Qgis.MessageLevel.Warning, duration=5)
 
         # Check if size of tiles is below Garmins limit of 1 megapixel (for each tile)
         if (tile_width * tile_height) > max_pix:
-            iface.messageBar().pushMessage("WARNING", "The number of pixels in a tile exceeds Garmins limit of 1 megapixel per tile! Images will not be displayed properly.", level=Qgis.MessageLevel.Warning, duration=5)
+            self.iface.messageBar().pushMessage("WARNING", "The number of pixels in a tile exceeds Garmins limit of 1 megapixel per tile! Images will not be displayed properly.", level=Qgis.MessageLevel.Warning, duration=5)
 
-        progressMessageBar = iface.messageBar().createMessage(f'Producing total of {n_tiles} tiles...')
+        progressMessageBar = self.iface.messageBar().createMessage(f'Producing total of {n_tiles} tiles...')
         progress = QProgressBar()
         progress.setMaximum(n_tiles)
         progress.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         progressMessageBar.layout().addWidget(progress)
-        iface.messageBar().pushWidget(progressMessageBar, Qgis.MessageLevel.Info)
+        self.iface.messageBar().pushWidget(progressMessageBar, Qgis.MessageLevel.Info)
 
         mem_driver = gdal.GetDriverByName("MEM")
         jpg_driver = gdal.GetDriverByName("JPEG")
@@ -558,7 +582,7 @@ class GarminCustomMap:
                     # Update progress bar
                     progress.setValue(done_tiles)
                     # Output message in status bar, too
-                    iface.statusBarIface().showMessage(f'Produced tile: {done_tiles}')
+                    self.iface.statusBarIface().showMessage(f'Produced tile: {done_tiles}')
                 # Calculate new Y-offset
                 y_offset = (y_offset + row_height)
 
@@ -576,6 +600,6 @@ class GarminCustomMap:
         # Give success message
         tiles_total = done_tiles - empty_tiles
         skipped = f' {empty_tiles} empty tiles were skipped.' if empty_tiles else ''
-        iface.messageBar().pushMessage('Done',
+        self.iface.messageBar().pushMessage('Done',
                 f'Produced {tiles_total} tiles, with {n_rows} rows and {n_cols} columns.{skipped}',
                 level=Qgis.MessageLevel.Success, duration=5)

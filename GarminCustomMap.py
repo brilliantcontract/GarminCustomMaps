@@ -26,6 +26,7 @@ from PyQt5.QtGui import *
 from qgis.core import *
 from qgis.gui import *
 from qgis.utils import *
+from qgis.PyQt.QtWidgets import QPushButton
 
 from osgeo import gdal
 from osgeo import gdalconst
@@ -49,7 +50,7 @@ from . import resources
 # Import the code for the dialog
 from .GarminCustomMap_dialog import GarminCustomMapDialog
 import os.path
-from PyQt5.QtWidgets import QAction, QFileDialog, QDialog, QMessageBox, QProgressBar, QPushButton
+from PyQt5.QtWidgets import QAction, QFileDialog, QDialog, QMessageBox, QProgressBar
 
 def dbgMsg (message):
     QgsMessageLog.logMessage(message, "GarminCustomMap", level=Qgis.Info)

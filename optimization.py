@@ -13,17 +13,25 @@ import numpy as np
 from itertools import combinations
 
 def optimize_dtb (x, y, max_tile_size, max_num_tiles):
-    """This method uses brute force to find optimal tiles sizes of a full-extent image.
+    """This method searches the tile grids to find optimal tiles sizes of a full-extent image.
 
-    This method contains several improvements to a basic brute force approach.
-    We use of dtypes to reduce computational and memory load.
-    We also use boolean indexing to sift out sections of the solution space that
-    fall outside our input parameters.
+    Every allowed number of rows and columns is tried, using the smallest tile
+    that covers the image with that grid. This scores the same candidates as a
+    full brute force over every width and height would rank highest, but only
+    needs a few hundred of them instead of x * y, so large images do not run
+    out of memory.
+    Returns (1, 1) if no tile size satisfies the constraints.
     """
 
-    # Set up solution space
-    W, H = np.meshgrid(np.arange(1,x+1, dtype=np.uint32), np.arange(1,y+1, dtype=np.uint32))
-    Z = np.zeros((y, x), dtype=np.float32)
+    # Candidate grids: all column / row counts within the tile limit
+    cols, rows = np.meshgrid(np.arange(1, max_num_tiles + 1, dtype=np.int64),
+                             np.arange(1, max_num_tiles + 1, dtype=np.int64))
+    grid = cols * rows <= max_num_tiles
+    cols, rows = cols[grid], rows[grid]
+
+    # Smallest tile covering the image with that grid
+    W = -(-x // cols)
+    H = -(-y // rows)
     img_ext = x*y
 
     # Tile size
@@ -31,19 +39,22 @@ def optimize_dtb (x, y, max_tile_size, max_num_tiles):
     # Calculate the side ratio
     S = np.minimum(W,H)/np.maximum(W,H)
     # Number of tiles, rows x columns
-    N = (np.ceil(x/W) * np.ceil(y/H)).astype(np.uint32)
+    N = (-(-x // W)) * (-(-y // H))
     # Pixel remainder shifted by 1 to avoid division by 0
     P = A*N - img_ext + 1
     # Mask the values that fall outside the constraints
     m = (A <= max_tile_size) & (N <= max_num_tiles)
+    if not m.any():
+        return (1, 1)
 
     # Optimization score
+    Z = np.zeros(A.shape, dtype=np.float64)
     Z[m] = A[m] * S[m] / (N[m] * P[m])
 
     # Find optimal size
-    opt_tile_size = np.unravel_index(np.argmax(Z), Z.shape)
+    opt = np.argmax(Z)
 
-    return (W[opt_tile_size], H[opt_tile_size])
+    return (W[opt], H[opt])
 
 def trial_division(n):
     """This is a trial division factorization implementation.

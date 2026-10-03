@@ -371,7 +371,7 @@ class GarminCustomMap:
         mapSettings.setFlags(Qgis.MapSettingsFlags(Qgis.MapSettingsFlag.Antialiasing | Qgis.MapSettingsFlag.UseAdvancedEffects | Qgis.MapSettingsFlag.ForceVectorOutput | Qgis.MapSettingsFlag.DrawLabeling))
 
         # create output image and initialize it
-        image = QImage(QSize(width, height), QImage.Format.Format_RGB555)
+        image = QImage(QSize(width, height), QImage.Format.Format_RGB32)
         image.fill(qRgb(255, 255, 255))
 
         # adjust map canvas (renderer) to the image size and render

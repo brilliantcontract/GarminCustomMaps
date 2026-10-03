@@ -55,7 +55,33 @@
         <layout class="QGridLayout" name="gridLayout_5">
          <item row="0" column="0">
           <layout class="QGridLayout" name="gridLayout_2">
-           <item row="4" column="0">
+           <item row="1" column="0" alignment="Qt::AlignVCenter">
+            <widget class="QComboBox" name="tile_limit">
+             <property name="toolTip">
+              <string>Most Garmin GPS units show at most 100 tiles across all Custom Maps on the device.
+Newer units (Montana, Oregon 6x0, GPSMAP 64 and later) show up to 500.
+Automatic tile sizes and the tile count warning use this limit.</string>
+             </property>
+             <item>
+              <property name="text">
+               <string>100 tiles</string>
+              </property>
+             </item>
+             <item>
+              <property name="text">
+               <string>500 tiles</string>
+              </property>
+             </item>
+            </widget>
+           </item>
+           <item row="1" column="1" colspan="2" alignment="Qt::AlignLeft|Qt::AlignVCenter">
+            <widget class="QLabel" name="tile_limit_label">
+             <property name="text">
+              <string>Tile limit of your GPS unit</string>
+             </property>
+            </widget>
+           </item>
+           <item row="5" column="0">
             <spacer name="verticalSpacer">
              <property name="orientation">
               <enum>Qt::Vertical</enum>
@@ -68,7 +94,7 @@
              </property>
             </spacer>
            </item>
-           <item row="12" column="0">
+           <item row="13" column="0">
             <spacer name="verticalSpacer_3">
              <property name="orientation">
               <enum>Qt::Vertical</enum>
@@ -81,7 +107,7 @@
              </property>
             </spacer>
            </item>
-           <item row="2" column="0" alignment="Qt::AlignVCenter">
+           <item row="3" column="0" alignment="Qt::AlignVCenter">
             <widget class="QSpinBox" name="tile_height">
              <property name="toolTip">
               <string>Height of each tile in pixels.
@@ -101,14 +127,14 @@ your GPS unit is limied to 100 (across all Custom Maps).</string>
              </property>
             </widget>
            </item>
-           <item row="2" column="1" colspan="2" alignment="Qt::AlignLeft|Qt::AlignVCenter">
+           <item row="3" column="1" colspan="2" alignment="Qt::AlignLeft|Qt::AlignVCenter">
             <widget class="QLabel" name="tile_height_label">
              <property name="text">
               <string>Height of each tile in pixels</string>
              </property>
             </widget>
            </item>
-           <item row="3" column="0" alignment="Qt::AlignVCenter">
+           <item row="4" column="0" alignment="Qt::AlignVCenter">
             <widget class="QSpinBox" name="tile_width">
              <property name="toolTip">
               <string>Width of each tile in pixels.
@@ -128,14 +154,14 @@ your GPS unit is limied to 100 (across all Custom Maps).</string>
              </property>
             </widget>
            </item>
-           <item row="3" column="1" colspan="2" alignment="Qt::AlignLeft|Qt::AlignVCenter">
+           <item row="4" column="1" colspan="2" alignment="Qt::AlignLeft|Qt::AlignVCenter">
             <widget class="QLabel" name="tile_width_label">
              <property name="text">
               <string>Width of each tile in pixels</string>
              </property>
             </widget>
            </item>
-           <item row="6" column="0" colspan="2" alignment="Qt::AlignVCenter">
+           <item row="7" column="0" colspan="2" alignment="Qt::AlignVCenter">
             <widget class="QSlider" name="jpg_quality">
              <property name="toolTip">
               <string>The JPG-quality influences the drawing speed on your GPS unit.
@@ -155,21 +181,21 @@ Smaller files are drawn faster.</string>
              </property>
             </widget>
            </item>
-           <item row="6" column="2" alignment="Qt::AlignVCenter">
+           <item row="7" column="2" alignment="Qt::AlignVCenter">
             <widget class="QLabel" name="jpg_quality_label">
              <property name="text">
               <string>JPG-Compression</string>
              </property>
             </widget>
            </item>
-           <item row="9" column="1" colspan="2" alignment="Qt::AlignVCenter">
+           <item row="10" column="1" colspan="2" alignment="Qt::AlignVCenter">
             <widget class="QLabel" name="zoom_label">
              <property name="text">
               <string>Zoom-Factor (determines the scale)</string>
              </property>
             </widget>
            </item>
-           <item row="14" column="0" alignment="Qt::AlignVCenter">
+           <item row="15" column="0" alignment="Qt::AlignVCenter">
             <widget class="QSpinBox" name="draworder">
              <property name="toolTip">
               <string>Draworder settings &gt;= 50 will draw your Custom Map on top of other maps.
@@ -197,14 +223,14 @@ your Custom Map.</string>
              </property>
             </widget>
            </item>
-           <item row="14" column="1" colspan="2" alignment="Qt::AlignVCenter">
+           <item row="15" column="1" colspan="2" alignment="Qt::AlignVCenter">
             <widget class="QLabel" name="draworder_label">
              <property name="text">
               <string>Draworder</string>
              </property>
             </widget>
            </item>
-           <item row="9" column="0" alignment="Qt::AlignVCenter">
+           <item row="10" column="0" alignment="Qt::AlignVCenter">
             <widget class="QDoubleSpinBox" name="zoom">
              <property name="toolTip">
               <string/>
@@ -213,7 +239,7 @@ your Custom Map.</string>
               <number>1</number>
              </property>
              <property name="minimum">
-              <double>1.000000000000000</double>
+              <double>0.100000000000000</double>
              </property>
              <property name="maximum">
               <double>1000.000000000000000</double>
@@ -223,21 +249,21 @@ your Custom Map.</string>
              </property>
             </widget>
            </item>
-           <item row="5" column="0" colspan="3" alignment="Qt::AlignVCenter">
+           <item row="6" column="0" colspan="3" alignment="Qt::AlignVCenter">
             <widget class="QLabel" name="label_2">
              <property name="text">
               <string>Image quality</string>
              </property>
             </widget>
            </item>
-           <item row="13" column="0" colspan="3" alignment="Qt::AlignVCenter">
+           <item row="14" column="0" colspan="3" alignment="Qt::AlignVCenter">
             <widget class="QLabel" name="label_3">
              <property name="text">
               <string>Order of the map on the GPS unit</string>
              </property>
             </widget>
            </item>
-           <item row="1" column="0" colspan="3" alignment="Qt::AlignLeft|Qt::AlignVCenter">
+           <item row="2" column="0" colspan="3" alignment="Qt::AlignLeft|Qt::AlignVCenter">
             <widget class="QCheckBox" name="flag_optimize">
              <property name="text">
               <string>Optimize tile size automatically</string>
@@ -247,7 +273,7 @@ your Custom Map.</string>
              </property>
             </widget>
            </item>
-           <item row="16" column="0" colspan="3" alignment="Qt::AlignVCenter">
+           <item row="17" column="0" colspan="3" alignment="Qt::AlignVCenter">
             <widget class="QCheckBox" name="flag_skip_empty">
              <property name="text">
               <string>Skip production of empty (entirely white) tiles</string>
@@ -257,7 +283,7 @@ your Custom Map.</string>
              </property>
             </widget>
            </item>
-           <item row="17" column="0" colspan="3" alignment="Qt::AlignVCenter">
+           <item row="18" column="0" colspan="3" alignment="Qt::AlignVCenter">
             <widget class="QCheckBox" name="flag_dbgMsg">
              <property name="toolTip">
               <string>This setting will dump verbose output to a new tab in the Log Messages panel.</string>
@@ -270,7 +296,7 @@ your Custom Map.</string>
              </property>
             </widget>
            </item>
-           <item row="7" column="0">
+           <item row="8" column="0">
             <spacer name="verticalSpacer_2">
              <property name="orientation">
               <enum>Qt::Vertical</enum>
@@ -283,28 +309,28 @@ your Custom Map.</string>
              </property>
             </spacer>
            </item>
-           <item row="10" column="0" colspan="3" alignment="Qt::AlignVCenter">
+           <item row="11" column="0" colspan="3" alignment="Qt::AlignVCenter">
             <widget class="QLabel" name="zoom_100">
              <property name="text">
               <string/>
              </property>
             </widget>
            </item>
-           <item row="8" column="0" colspan="3" alignment="Qt::AlignVCenter">
+           <item row="9" column="0" colspan="3" alignment="Qt::AlignVCenter">
             <widget class="QLabel" name="label_4">
              <property name="text">
               <string>Zoom / Scale (see &quot;Setting hints&quot;)</string>
              </property>
             </widget>
            </item>
-           <item row="11" column="0" colspan="3" alignment="Qt::AlignVCenter">
+           <item row="12" column="0" colspan="3" alignment="Qt::AlignVCenter">
             <widget class="QLabel" name="zoom_500">
              <property name="text">
               <string/>
              </property>
             </widget>
            </item>
-           <item row="15" column="0">
+           <item row="16" column="0">
             <spacer name="verticalSpacer_4">
              <property name="orientation">
               <enum>Qt::Vertical</enum>

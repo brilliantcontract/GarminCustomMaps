@@ -123,6 +123,11 @@ class ExportTest(unittest.TestCase):
         """Run the plugin as if the user picked kmz_file and pressed OK"""
         module = load_plugin()
         iface = FakeIface(canvas)
+        # Keep the message bar texts, for checking warnings
+        self.messages = []
+        push_message = iface.message_bar.pushMessage
+        iface.message_bar.pushMessage = lambda *args, **kwargs: (
+            self.messages.append(args), push_message(*args, **kwargs))
         plugin = module.GarminCustomMap(iface)
         plugin.initGui()
 
@@ -137,6 +142,8 @@ class ExportTest(unittest.TestCase):
             dlg.tile_width.setValue(options.get('tile_width', 256))
             dlg.tile_height.setValue(options.get('tile_height', 256))
             dlg.jpg_quality.setValue(95)
+            if 'tile_limit' in options:
+                dlg.tile_limit.setCurrentIndex((100, 500).index(options['tile_limit']))
             return 1
 
         # Older versions used the global iface from qgis.utils
@@ -274,6 +281,38 @@ class ExportTest(unittest.TestCase):
         self.export(canvas, zoom=2.0, cancel=True)
         with open(self.kmz_file) as f:
             self.assertEqual(f.read(), 'old map')
+
+    def tile_warnings(self):
+        return [m for m in self.messages if 'exceeds the Garmin limit' in str(m)]
+
+    def test_tile_limit(self):
+        wkt = 'POLYGON((10 59, 12 59, 12 60.5, 10 60.5, 10 59))'
+        # 1600 x 1200 pixels in 64 x 64 tiles: 25 x 19 = 475 tiles
+        canvas = self.make_canvas('EPSG:4326', (10, 59, 12, 60.5), wkt)
+        self.export(canvas, zoom=4.0, tile_width=64, tile_height=64, tile_limit=100)
+        self.assertEqual(len(self.tile_warnings()), 1)
+        self.assertIn('limit of 100 tiles', str(self.tile_warnings()[0]))
+        canvas = self.make_canvas('EPSG:4326', (10, 59, 12, 60.5), wkt)
+        self.export(canvas, zoom=4.0, tile_width=64, tile_height=64, tile_limit=500)
+        self.assertEqual(self.tile_warnings(), [])
+
+    def test_optimize_for_500_tiles(self):
+        wkt = 'POLYGON((10 59, 12 59, 12 60.5, 10 60.5, 10 59))'
+        # 12000 x 9000 = 108 megapixels can't fit into 100 tiles, but into 500
+        canvas = self.make_canvas('EPSG:4326', (10, 59, 12, 60.5), wkt)
+        kmz = self.export(canvas, zoom=30.0, optimize=True, skip_empty=False, tile_limit=500)
+        _, overlays = self.overlays(kmz)
+        self.assertLessEqual(len(overlays), 500)
+        self.assertEqual(self.tile_warnings(), [])
+
+    def test_zoom_below_one(self):
+        canvas = self.make_canvas('EPSG:4326', (10, 59, 12, 60.5),
+                                  'POLYGON((10 59, 12 59, 12 60.5, 10 60.5, 10 59))')
+        kmz = self.export(canvas, zoom=0.5, tile_width=1024, tile_height=1024)
+        _, overlays = self.overlays(kmz)
+        # 200 x 150 pixels fit into one tile
+        self.assertEqual(len(overlays), 1)
+        self.assertEqual(self.read_tile(kmz, overlays[0]['href'])[0].shape, (150, 200))
 
 
 if __name__ == '__main__':

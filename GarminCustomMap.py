@@ -420,8 +420,8 @@ def rgb_array(image):
     The view shares the image's memory, so keep the image while using it."""
     width, height = image.width(), image.height()
     bits = image.constBits()
-    bits.setsize(image.sizeInBytes())
-    # Rows are padded to bytesPerLine
+    # Rows are padded to bytesPerLine (sizeInBytes() is not exposed by older PyQt5 builds)
+    bits.setsize(image.bytesPerLine() * height)
     rows = np.frombuffer(bits, np.uint8).reshape(height, image.bytesPerLine())
     return rows[:, :width * 3].reshape(height, width, 3)
 
@@ -507,6 +507,14 @@ class GarminExport(QObject):
     def strip_rendered(self):
         if self.cancelled:
             return
+        try:
+            self.write_strip()
+        except Exception as e:
+            # Without this the export would never finish and block new ones
+            self.job = None
+            self.fail(str(e))
+
+    def write_strip(self):
         image = self.job.renderedImage().convertToFormat(QImage.Format.Format_RGB888)
         self.job = None
         strip = rgb_array(image)

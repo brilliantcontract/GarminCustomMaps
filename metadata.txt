@@ -1,6 +1,7 @@
 [general]
 name=GarminCustomMap
 qgisMinimumVersion=3.22
+qgisMaximumVersion=4.99
 supportsQt6=True
 description=Export the current map canvas to a Garmin Custom Map (.kmz-file)
 version=3.6.0
@@ -18,6 +19,7 @@ repository=https://github.com/brilliantcontract/GarminCustomMaps/
 # Uncomment the following line and add your changelog:
 changelog=
   Version 3.6.0
+  - Installs on QGIS 4 (the plugin manager rejected it as built for 3.22 - 3.99)
   - Export runs in the background with a progress bar and a Cancel button
   - Large maps are rendered in strips, so memory use stays bounded
   - Full 8-bit colour (maps used to be rendered with 5 bits per channel)
